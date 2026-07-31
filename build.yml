@@ -1,0 +1,74 @@
+name: Build and Publish
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+
+    # ===== 清理残留的 XAML 错误文件 =====
+    - name: Clean XAML leftovers
+      shell: pwsh
+      run: |
+        $root = Get-Location
+        Write-Host "Working directory: $root"
+
+        # 1. 删除残留的 FolderMultiPickerDialog 文件
+        $file1 = Join-Path $root "src/MyFinder.UI/Views/FolderMultiPickerDialog.xaml"
+        $file2 = Join-Path $root "src/MyFinder.UI/Views/FolderMultiPickerDialog.xaml.cs"
+        if (Test-Path $file1) { Remove-Item $file1 -Force; Write-Host "Removed $file1" }
+        if (Test-Path $file2) { Remove-Item $file2 -Force; Write-Host "Removed $file2" }
+
+        # 2. 清理所有 bin/obj 缓存（强制重建）
+        Get-ChildItem -Path $root -Recurse -Directory -Include "bin","obj" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "Cleaned bin/obj folders."
+
+        # 3. 从 .csproj 中移除可能残留的引用
+        $csproj = Join-Path $root "src/MyFinder.UI/MyFinder.UI.csproj"
+        if (Test-Path $csproj) {
+            $content = Get-Content $csproj -Raw
+            # 移除任何包含 FolderMultiPickerDialog 的 Include 条目
+            $content = $content -replace '<(Page|Compile|Content|None)\s+Include=".*?FolderMultiPickerDialog.*?"\s*/>', ''
+            $content = $content -replace '<(Page|Compile|Content|None)\s+Include=".*?FolderMultiPickerDialog.*?"\s*>.*?</\1>', '', 's'
+            Set-Content -Path $csproj -Value $content -Encoding UTF8
+            Write-Host "Cleaned references from project file."
+        }
+
+        # 4. 扫描所有 XAML 文件，移除对 FolderMultiPickerDialog 的引用（包括控件实例和命名空间）
+        $xamlFiles = Get-ChildItem -Path (Join-Path $root "src/MyFinder.UI") -Filter "*.xaml" -Recurse
+        foreach ($xaml in $xamlFiles) {
+            $content = Get-Content $xaml.FullName -Raw
+            if ($content -match "FolderMultiPickerDialog") {
+                $lines = $content -split "`r?`n"
+                $newLines = $lines | Where-Object { $_ -notmatch "FolderMultiPickerDialog" }
+                $newContent = $newLines -join "`r`n"
+                Set-Content -Path $xaml.FullName -Value $newContent -Encoding UTF8
+                Write-Host "Cleaned $($xaml.Name)"
+            }
+        }
+
+        Write-Host "Cleanup completed."
+
+    - name: Restore dependencies
+      run: dotnet restore src/MyFinder.UI/MyFinder.UI.csproj
+
+    - name: Publish
+      run: dotnet publish src/MyFinder.UI/MyFinder.UI.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:PublishReadyToRun=true -o ./publish
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: MyFinder
+        path: ./publish

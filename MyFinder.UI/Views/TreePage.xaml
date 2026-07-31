@@ -1,0 +1,50 @@
+<Page
+    x:Class="MyFinder.UI.Views.TreePage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    x:Name="PageRoot">
+
+    <Grid Padding="24" RowSpacing="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0">
+            <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="目录树" VerticalAlignment="Center" />
+            <Button HorizontalAlignment="Right" Command="{x:Bind ViewModel.RefreshTreeCommand}">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <SymbolIcon Symbol="Refresh" />
+                    <TextBlock Text="刷新" VerticalAlignment="Center" />
+                </StackPanel>
+            </Button>
+        </Grid>
+
+        <Grid Grid.Row="1">
+            <TreeView
+                x:Name="FileTreeView"
+                ItemsSource="{x:Bind ViewModel.RootNodes, Mode=OneWay}"
+                Expanding="FileTreeView_Expanding"
+                ItemInvoked="FileTreeView_ItemInvoked"
+                SelectionMode="None">
+                <TreeView.ItemTemplate>
+                    <DataTemplate>
+                        <TreeViewItem ItemsSource="{Binding Children}" IsExpanded="{Binding IsExpanded, Mode=TwoWay}">
+                            <StackPanel Orientation="Horizontal" Spacing="8" Padding="4">
+                                <FontIcon Glyph="{Binding IconGlyph}" FontSize="16" Foreground="{ThemeResource AccentFillColorDefaultBrush}" />
+                                <TextBlock Text="{Binding Name}" VerticalAlignment="Center" />
+                                <StackPanel.ContextFlyout>
+                                    <MenuFlyout Opening="MenuFlyout_Opening">
+                                        <MenuFlyoutItem x:Name="OpenMenuItem" Text="📄 打开文件/文件夹" Click="OnOpenFileClick" Tag="{Binding}" />
+                                        <MenuFlyoutItem Text="🔍 在资源管理器中定位并选中" Click="OnOpenInExplorerClick" Tag="{Binding}" />
+                                        <MenuFlyoutItem x:Name="FavoriteMenuItem" Text="⭐ 添加到收藏" Click="OnToggleFavoriteClick" Tag="{Binding}" />
+                                    </MenuFlyout>
+                                </StackPanel.ContextFlyout>
+                            </StackPanel>
+                        </TreeViewItem>
+                    </DataTemplate>
+                </TreeView.ItemTemplate>
+            </TreeView>
+        </Grid>
+    </Grid>
+</Page>

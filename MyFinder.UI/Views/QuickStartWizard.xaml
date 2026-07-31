@@ -1,0 +1,33 @@
+<ContentDialog
+    x:Class="MyFinder.UI.Views.QuickStartWizard"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="🚀 快速索引向导"
+    PrimaryButtonText="开始索引"
+    CloseButtonText="稍后"
+    DefaultButton="Primary"
+    PrimaryButtonClick="OnStartIndexClick">
+
+    <StackPanel Spacing="12">
+        <TextBlock Text="选择要索引的目录，MyFinder 将自动扫描这些位置的文件。" TextWrapping="Wrap" />
+        <RadioButtons x:Name="PathOptions" SelectedIndex="0">
+            <RadioButtons.Items>
+                <x:String>📁 我的文档</x:String>
+                <x:String>🖥️ 桌面</x:String>
+                <x:String>📂 自定义...</x:String>
+            </RadioButtons.Items>
+        </RadioButtons>
+
+        <!-- 修复：选择自定义时，提供原生浏览按钮选择文件夹 -->
+        <Grid ColumnSpacing="8" Visibility="{x:Bind CustomPathBoxVisibility, Mode=OneWay}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBox x:Name="CustomPathBox" Grid.Column="0" PlaceholderText="请选择或输入自定义目录..." />
+            <Button Grid.Column="1" Content="📁 浏览..." Click="OnBrowseCustomPathClick" />
+        </Grid>
+
+        <CheckBox x:Name="IncludeSubfolders" Content="包含子文件夹（递归索引）" IsChecked="True" />
+    </StackPanel>
+</ContentDialog>
