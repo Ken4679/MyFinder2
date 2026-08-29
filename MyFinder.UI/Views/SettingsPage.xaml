@@ -1,5 +1,0 @@
-<!-- 移除“批量添加目录”按钮，仅保留单个添加 -->
-<Button Command="{x:Bind ViewModel.AddDirectoryCommand}" 
-        Content="➕ 添加监控目录" 
-        Style="{StaticResource DefaultButtonStyle}" />
-<!-- 如果原来有 Grid 包含两个按钮，现在只保留这一个 -->

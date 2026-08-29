@@ -1,0 +1,6 @@
+{
+  "name": "MyFinder",
+  "description": "轻量、安全、纯本地运行的 Windows 11 Fluent Design 文件搜索与已安装软件管理桌面应用",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
