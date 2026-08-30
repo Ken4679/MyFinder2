@@ -1,5 +1,20 @@
 const { app, BrowserWindow, ipcMain, shell, clipboard } = require('electron');
 const path = require('path');
+const fs = require('fs');
+
+// Force 100% Self-Contained Portable Mode:
+// Store all Electron cache, localStorage, cookies, and indexes in `./data` next to the EXE
+try {
+  const exeDir = path.dirname(app.getPath('exe'));
+  const portableDataDir = path.join(exeDir, 'data');
+  if (!fs.existsSync(portableDataDir)) {
+    fs.mkdirSync(portableDataDir, { recursive: true });
+  }
+  app.setPath('userData', portableDataDir);
+  app.setPath('appData', exeDir);
+} catch (e) {
+  // fallback if path is not writable
+}
 
 let mainWindow = null;
 
