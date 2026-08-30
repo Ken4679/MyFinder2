@@ -30,9 +30,10 @@
     "artifactName": "MyFinder-Portable-${version}.exe"
   },
   "nsis": {
-    "oneClick": true,
+    "oneClick": false,
     "perMachine": false,
     "allowToChangeInstallationDirectory": true,
     "artifactName": "MyFinder-Setup-${version}.exe"
-  }
+  },
+  "publish": null
 }

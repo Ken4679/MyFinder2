@@ -32,7 +32,7 @@ jobs:
 
       - name: Package Windows EXE (Portable & Installer)
         run: |
-          npx electron-builder --win --config electron-builder.json
+          npx electron-builder --win --config electron-builder.json --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
