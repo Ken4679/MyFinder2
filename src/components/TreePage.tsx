@@ -15,7 +15,8 @@ import {
   Star,
   Info,
   ExternalLink,
-  Plus
+  Plus,
+  Copy
 } from 'lucide-react';
 import { TreeNodeModel, FileCategory, FileRecord, FavoriteRecord } from '../types';
 import { formatBytes } from '../services/storageService';
@@ -96,8 +97,13 @@ export const TreePage: React.FC<TreePageProps> = ({
 
   const getContextMenuActions = (node: TreeNodeModel): ContextMenuAction[] => [
     {
-      label: node.isDirectory ? '浏览文件夹' : '查看文件详情',
-      icon: node.isDirectory ? <FolderOpen className="w-4 h-4 text-blue-500" /> : <Info className="w-4 h-4 text-blue-500" />,
+      label: '在资源管理器中定位并选中',
+      icon: <FolderOpen className="w-4 h-4 text-amber-500" />,
+      onClick: () => onOpenInExplorer(node.fullPath),
+    },
+    {
+      label: node.isDirectory ? '浏览文件夹详情' : '查看文件详情与安全评估',
+      icon: <Info className="w-4 h-4 text-blue-500" />,
       onClick: () => {
         if (node.isDirectory) {
           onOpenInExplorer(node.fullPath);
@@ -116,9 +122,18 @@ export const TreePage: React.FC<TreePageProps> = ({
       },
     },
     {
-      label: '在资源管理器中定位并选中',
-      icon: <ExternalLink className="w-4 h-4 text-amber-500" />,
-      onClick: () => onOpenInExplorer(node.fullPath),
+      label: '复制完整路径',
+      icon: <Copy className="w-4 h-4 text-neutral-500" />,
+      onClick: () => {
+        navigator.clipboard?.writeText(node.fullPath);
+      },
+    },
+    {
+      label: '复制名称',
+      icon: <FileText className="w-4 h-4 text-neutral-500" />,
+      onClick: () => {
+        navigator.clipboard?.writeText(node.name);
+      },
     },
     {
       label: isFavorite(node.fullPath) ? '取消收藏' : '⭐ 添加到收藏',

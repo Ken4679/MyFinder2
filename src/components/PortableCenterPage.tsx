@@ -70,26 +70,29 @@ export const PortableCenterPage: React.FC<PortableCenterPageProps> = ({
     if (onRefreshFiles) onRefreshFiles();
   };
 
-  const tauriBuildScript = `# 选项 1: 使用 Tauri (推荐，极小体积 <4MB，原生 Windows 11 Fluent 体验)
-# 1. 确保安装了 Node.js 与 Rust
+  const githubActionsScript = `# 🚀 GitHub Actions 自动云端构建 EXE（无需本地配置环境）
+# 1. 将项目推送到您的 GitHub 仓库 (git push)
+# 2. GitHub 将自动触发 .github/workflows/build-exe.yml 工作流
+# 3. 在仓库的「Actions」标签页即可直接下载自动打包完成的 Windows 便携 EXE
+# 4. 或者在 GitHub 创建 Release，自动将 MyFinder-Portable.exe 附加到发布附件中！`;
+
+  const electronBuildScript = `# 📦 本地一键打包 Windows 便携式 EXE (Electron Builder)
+# 1. 确保安装了依赖
+npm install
+
+# 2. 一键编译前端并生成独立的单文件绿色便携 EXE
+npm run build:exe
+
+# 输出产物直接位于: dist_electron/MyFinder-Portable-2.0.0.exe
+# 包含双击即用的 Portable 单文件与 Setup 安装包两种格式！`;
+
+  const tauriBuildScript = `# ⚡ 选项 3: 使用 Tauri (极小体积 <4MB，原生 Windows 11 Fluent 体验)
+# 1. 安装 Tauri CLI
 cargo install tauri-cli
 
 # 2. 一键打包生成独立的单个 MyFinder.exe 文件
 npm run build
-cargo tauri build --target x86_64-pc-windows-msvc
-
-# 打包产物直接位于: src-tauri/target/release/MyFinder.exe
-# 双击即可在任何 Windows 10/11 电脑上秒开，无需安装，随拷随走！`;
-
-  const dotnetAotScript = `# 选项 2: 使用 C# .NET 8 / 9 Native AOT 单文件编译
-dotnet publish MyFinder.sln -c Release -r win-x64 \\
-  -p:PublishSingleFile=true \\
-  -p:SelfContained=true \\
-  -p:EnableCompressionInSingleFile=true \\
-  -p:PublishTrimmed=true \\
-  -o ./dist/portable-win-x64
-
-# 输出一个完全独立的单个 MyFinder.exe 文件，删除文件夹即完全卸载`;
+cargo tauri build --target x86_64-pc-windows-msvc`;
 
   const handleExportJson = () => {
     const dataStr = JSON.stringify(
@@ -334,29 +337,69 @@ dotnet publish MyFinder.sln -c Release -r win-x64 \\
       </section>
 
       {/* Standalone Single EXE Packaging Guide */}
-      <section className="bg-white dark:bg-[#252525] rounded-xl p-5 border border-black/5 dark:border-white/10 shadow-xs space-y-4">
+      <section className="bg-white dark:bg-[#252525] rounded-xl p-5 border border-black/5 dark:border-white/5 shadow-xs space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Package className="w-4 h-4 text-purple-500" />
             <h2 className="text-sm font-bold text-[#1c1c1c] dark:text-[#f3f3f3]">
-              本地单文件独立 EXE 编译方案（无需安装 • 真正的纯净 EXE）
+              Windows 独立 EXE 自动化打包方案（GitHub CI/CD 与本地编译）
             </h2>
           </div>
           <span className="text-xs px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-950/60 text-purple-600 dark:text-purple-300 font-medium">
-            原生 Windows 桌面程序
+            GitHub Actions 已配置
           </span>
         </div>
 
         <p className="text-xs text-neutral-600 dark:text-neutral-300 leading-relaxed">
-          您可以直接将本项目打包为单个 <code>MyFinder.exe</code> 可执行文件。打包后是一个纯粹的绿色单文件，直接放在 U 盘或桌面双击即用，删除文件即彻底卸载。
+          本项目已内置完备的 GitHub Actions 自动化编译流与本地打包脚本。推送到 GitHub 即可自动在云端流水线打包生成可直接双击运行的独立 Windows <code>.exe</code> 文件，无需在本地配置复杂环境。
         </p>
 
-        {/* Script Option 1: Tauri */}
+        {/* Script Option 1: GitHub Actions CI/CD */}
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-1.5 text-xs font-bold text-neutral-800 dark:text-neutral-200">
-              <Cpu className="w-3.5 h-3.5 text-blue-500" />
-              <span>方案 A：Tauri (体积仅 ~3MB，极速秒启，内存占用 &lt; 20MB)</span>
+              <Sparkles className="w-3.5 h-3.5 text-emerald-500" />
+              <span>方案 1：GitHub Actions 云端自动构建 EXE（已内置 .github/workflows/build-exe.yml）</span>
+            </div>
+            <button
+              onClick={() => handleCopy(githubActionsScript, 'github')}
+              className="text-xs text-[#0078d4] hover:underline flex items-center gap-1 cursor-pointer"
+            >
+              <Copy className="w-3 h-3" />
+              <span>{copiedScript === 'github' ? '已复制说明' : '复制说明'}</span>
+            </button>
+          </div>
+          <pre className="p-3.5 rounded-lg bg-neutral-900 text-emerald-300 font-mono text-xs overflow-x-auto leading-relaxed border border-neutral-800">
+            {githubActionsScript}
+          </pre>
+        </div>
+
+        {/* Script Option 2: Electron Builder */}
+        <div className="space-y-2 pt-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-neutral-800 dark:text-neutral-200">
+              <FileCode className="w-3.5 h-3.5 text-blue-500" />
+              <span>方案 2：本地 Electron Builder 一键打包 EXE</span>
+            </div>
+            <button
+              onClick={() => handleCopy(electronBuildScript, 'electron')}
+              className="text-xs text-[#0078d4] hover:underline flex items-center gap-1 cursor-pointer"
+            >
+              <Copy className="w-3 h-3" />
+              <span>{copiedScript === 'electron' ? '已复制命令' : '复制命令'}</span>
+            </button>
+          </div>
+          <pre className="p-3.5 rounded-lg bg-neutral-900 text-blue-300 font-mono text-xs overflow-x-auto leading-relaxed border border-neutral-800">
+            {electronBuildScript}
+          </pre>
+        </div>
+
+        {/* Script Option 3: Tauri */}
+        <div className="space-y-2 pt-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-neutral-800 dark:text-neutral-200">
+              <Cpu className="w-3.5 h-3.5 text-purple-500" />
+              <span>方案 3：Tauri 超轻量原生编译 (体积 &lt; 4MB)</span>
             </div>
             <button
               onClick={() => handleCopy(tauriBuildScript, 'tauri')}
@@ -366,28 +409,8 @@ dotnet publish MyFinder.sln -c Release -r win-x64 \\
               <span>{copiedScript === 'tauri' ? '已复制命令' : '复制命令'}</span>
             </button>
           </div>
-          <pre className="p-3.5 rounded-lg bg-neutral-900 text-emerald-400 font-mono text-xs overflow-x-auto leading-relaxed border border-neutral-800">
-            {tauriBuildScript}
-          </pre>
-        </div>
-
-        {/* Script Option 2: C# .NET Native AOT */}
-        <div className="space-y-2 pt-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5 text-xs font-bold text-neutral-800 dark:text-neutral-200">
-              <FileCode className="w-3.5 h-3.5 text-purple-500" />
-              <span>方案 B：C# .NET 8 / 9 Native AOT 单文件发布</span>
-            </div>
-            <button
-              onClick={() => handleCopy(dotnetAotScript, 'dotnet')}
-              className="text-xs text-[#0078d4] hover:underline flex items-center gap-1 cursor-pointer"
-            >
-              <Copy className="w-3 h-3" />
-              <span>{copiedScript === 'dotnet' ? '已复制命令' : '复制命令'}</span>
-            </button>
-          </div>
           <pre className="p-3.5 rounded-lg bg-neutral-900 text-purple-300 font-mono text-xs overflow-x-auto leading-relaxed border border-neutral-800">
-            {dotnetAotScript}
+            {tauriBuildScript}
           </pre>
         </div>
       </section>

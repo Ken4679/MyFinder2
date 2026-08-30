@@ -11,7 +11,8 @@ import {
   FileArchive,
   Star,
   FolderOpen,
-  Info
+  Info,
+  Copy
 } from 'lucide-react';
 import { FileRecord, FileCategory, FavoriteRecord } from '../types';
 import { formatBytes } from '../services/storageService';
@@ -76,14 +77,28 @@ export const RecentPage: React.FC<RecentPageProps> = ({
 
   const getContextMenuActions = (file: FileRecord): ContextMenuAction[] => [
     {
-      label: '查看文件详情',
+      label: '在资源管理器中定位并选中',
+      icon: <FolderOpen className="w-4 h-4 text-amber-500" />,
+      onClick: () => onOpenInExplorer(file),
+    },
+    {
+      label: '查看文件详情与安全评估',
       icon: <Info className="w-4 h-4 text-blue-500" />,
       onClick: () => onOpenFile(file),
     },
     {
-      label: '在资源管理器中定位',
-      icon: <FolderOpen className="w-4 h-4 text-amber-500" />,
-      onClick: () => onOpenInExplorer(file),
+      label: '复制文件完整路径',
+      icon: <Copy className="w-4 h-4 text-neutral-500" />,
+      onClick: () => {
+        navigator.clipboard?.writeText(file.path);
+      },
+    },
+    {
+      label: '复制文件名',
+      icon: <FileText className="w-4 h-4 text-neutral-500" />,
+      onClick: () => {
+        navigator.clipboard?.writeText(file.fileName);
+      },
     },
     {
       label: isFavorite(file.path) ? '取消收藏' : '⭐ 添加到收藏',

@@ -9,7 +9,8 @@ import {
   Info,
   ExternalLink,
   CheckCircle,
-  X
+  X,
+  Copy
 } from 'lucide-react';
 import { FavoriteRecord, FileRecord } from '../types';
 
@@ -118,7 +119,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                     className="flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-medium text-[#0078d4] hover:bg-blue-50 dark:hover:bg-blue-950/50 transition-colors cursor-pointer"
                   >
                     <FolderOpen className="w-3.5 h-3.5" />
-                    <span>打开</span>
+                    <span>{fav.targetType === 1 ? '浏览目录' : '查看文件'}</span>
                   </button>
 
                   <button
@@ -131,11 +132,22 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
 
                   <button
                     onClick={() => {
+                      navigator.clipboard?.writeText(fav.targetPath);
+                      showToast('已复制完整路径 📋');
+                    }}
+                    className="p-1.5 rounded text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer"
+                    title="复制路径"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                  </button>
+
+                  <button
+                    onClick={() => {
                       onRemoveFavorite(fav.id);
-                      showToast('已从收藏夹移除');
+                      showToast('已从收藏列表中移除（磁盘文件未变动）');
                     }}
                     className="p-1.5 rounded text-neutral-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors cursor-pointer"
-                    title="删除此收藏"
+                    title="取消收藏（不影响磁盘文件）"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>

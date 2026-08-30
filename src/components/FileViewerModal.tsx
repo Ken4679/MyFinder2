@@ -125,10 +125,20 @@ export const FileViewerModal: React.FC<FileViewerModalProps> = ({
           </div>
 
           {/* File path box */}
-          <div className="p-3 bg-neutral-50 dark:bg-[#222] rounded-lg border border-black/5 dark:border-white/5">
-            <div className="flex items-center gap-2 text-xs font-medium text-neutral-500 dark:text-neutral-400 mb-1">
-              <Folder className="w-3.5 h-3.5" />
-              <span>文件完整路径</span>
+          <div className="p-3 bg-neutral-50 dark:bg-[#222] rounded-lg border border-black/5 dark:border-white/5 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-xs font-medium text-neutral-500 dark:text-neutral-400">
+                <Folder className="w-3.5 h-3.5" />
+                <span>文件完整路径（安全只读）</span>
+              </div>
+              <button
+                onClick={() => {
+                  navigator.clipboard?.writeText(file.path);
+                }}
+                className="text-[11px] text-[#0078d4] hover:underline cursor-pointer flex items-center gap-1"
+              >
+                <span>复制路径</span>
+              </button>
             </div>
             <p className="font-mono text-xs text-blue-600 dark:text-blue-400 break-all select-text">
               {file.path}
