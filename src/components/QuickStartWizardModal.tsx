@@ -22,21 +22,21 @@ export const QuickStartWizardModal: React.FC<QuickStartWizardModalProps> = ({
   if (!isOpen) return null;
 
   const handleStart = async () => {
-    let target = 'C:\\Users\\Admin\\Documents';
-    if (selectedOption === 'desktop') target = 'C:\\Users\\Admin\\Desktop';
-    if (selectedOption === 'custom') target = customPath.trim() || 'D:\\CustomFolder';
+    let target = 'D:\\Documents';
+    if (selectedOption === 'desktop') target = 'D:\\Desktop';
+    if (selectedOption === 'custom') target = customPath.trim() || 'D:\\Workspace';
 
     setIsProcessing(true);
-    setStatusMessage('正在初始化文件扫描器与 SQLite FTS5 引擎...');
-    setProgress(15);
+    setStatusMessage('正在初始化本地高速文件扫描引擎...');
+    setProgress(20);
 
     await new Promise(r => setTimeout(r, 400));
     setStatusMessage(`正在扫描目录：${target}...`);
-    setProgress(55);
+    setProgress(60);
 
-    await new Promise(r => setTimeout(r, 500));
-    setStatusMessage('正在写入本地索引数据库并建立倒排索引表...');
-    setProgress(85);
+    await new Promise(r => setTimeout(r, 400));
+    setStatusMessage('正在建立倒排索引数据库...');
+    setProgress(90);
 
     await onStartIndexing(target, includeSubfolders);
     setProgress(100);

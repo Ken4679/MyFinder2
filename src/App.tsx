@@ -19,8 +19,9 @@ import {
   defaultSeedFiles
 } from './services/storageService';
 import { FileDatabaseService } from './services/fileDatabaseService';
-import { scanInstalledSoftware, defaultSoftwareCatalog } from './services/softwareScannerService';
+import { scanInstalledSoftware, previewSoftwareCatalog } from './services/softwareScannerService';
 import { fileSyncService } from './services/fileSyncService';
+import { tauriBridge } from './services/tauriBridge';
 import { Shell } from './components/Shell';
 import { HomePage } from './components/HomePage';
 import { TreePage } from './components/TreePage';
@@ -37,7 +38,9 @@ export function App() {
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [files, setFiles] = useState<FileRecord[]>(() => loadFiles());
   const [favorites, setFavorites] = useState<FavoriteRecord[]>(() => loadFavorites());
-  const [softwareList, setSoftwareList] = useState<SoftwareRecord[]>(() => [...defaultSoftwareCatalog]);
+  const [softwareList, setSoftwareList] = useState<SoftwareRecord[]>(() =>
+    tauriBridge.isTauri() ? [] : [...previewSoftwareCatalog]
+  );
   const [isSoftwareScanning, setIsSoftwareScanning] = useState(false);
   const [currentTab, setCurrentTab] = useState<NavTab>('home');
   const [selectedFileForViewer, setSelectedFileForViewer] = useState<FileRecord | null>(null);
@@ -57,6 +60,28 @@ export function App() {
   useEffect(() => {
     saveSettings(settings);
   }, [settings]);
+
+  // Initial load from native SQLite database and Windows Registry if running in Tauri
+  useEffect(() => {
+    if (tauriBridge.isTauri()) {
+      tauriBridge.getIndexedFiles(500, 0).then(indexedFiles => {
+        if (indexedFiles && indexedFiles.length > 0) {
+          setFiles(indexedFiles);
+        }
+      }).catch(err => {
+        console.warn('Failed to fetch initial indexed files from SQLite', err);
+      });
+
+      setIsSoftwareScanning(true);
+      scanInstalledSoftware().then(scanned => {
+        setSoftwareList(scanned);
+        setIsSoftwareScanning(false);
+      }).catch(err => {
+        console.warn('Failed to scan installed software from Windows Registry', err);
+        setIsSoftwareScanning(false);
+      });
+    }
+  }, []);
 
   // Save favorites when changed
   useEffect(() => {
@@ -154,32 +179,58 @@ export function App() {
 
   // Startup check & zero-lag synchronization
   useEffect(() => {
-    const syncResult = fileSyncService.syncAllFiles(files, settings.watchedDirectories);
-    if (syncResult.removedCount > 0 || syncResult.updatedCount > 0) {
-      setFiles(syncResult.syncedFiles);
-      const remainingPaths = new Set(syncResult.syncedFiles.map(f => f.path.toLowerCase()));
-      setFavorites(prev => prev.filter(fav => fav.targetType === 1 || remainingPaths.has(fav.targetPath.toLowerCase())));
-      showToast(`🟢 启动自检完成：已实时同步文件状态并清理 ${syncResult.removedCount} 个外部删除的文件（0滞后）`);
+    if (tauriBridge.isTauri()) {
+      tauriBridge.getIndexStats().then(stats => {
+        if (stats.totalFiles > 0) {
+          showToast(`🟢 启动完成：已加载 SQLite 索引库（收录 ${stats.totalFiles} 个本地文件）`);
+        }
+      }).catch(() => {});
     }
   }, []);
 
-  const handleManualSync = useCallback(() => {
-    const syncResult = fileSyncService.syncAllFiles(files, settings.watchedDirectories);
-    setFiles(syncResult.syncedFiles);
-    const remainingPaths = new Set(syncResult.syncedFiles.map(f => f.path.toLowerCase()));
-    setFavorites(prev => prev.filter(fav => fav.targetType === 1 || remainingPaths.has(fav.targetPath.toLowerCase())));
-    if (syncResult.removedCount > 0 || syncResult.updatedCount > 0) {
-      showToast(`🟢 同步完成：更新 ${syncResult.updatedCount} 个修改，清理 ${syncResult.removedCount} 个已失效文件（0滞后）`);
-    } else {
-      showToast(`🟢 实时核验完成：所有 ${syncResult.syncedFiles.length} 个监控文件状态完全一致且正常（0滞后）`);
+  const handleManualSync = useCallback(async () => {
+    if (tauriBridge.isTauri()) {
+      showToast(`🔄 正在与本地文件系统全量核验...`);
+      for (const dir of settings.watchedDirectories) {
+        await tauriBridge.startIndexing(dir, settings.includeSubdirectories);
+      }
+      // Wait a moment for scanner thread to populate SQLite
+      setTimeout(async () => {
+        const fresh = await tauriBridge.getIndexedFiles(500, 0);
+        if (fresh && fresh.length > 0) {
+          setFiles(fresh);
+          showToast(`🟢 实时核验完成：已从 SQLite 加载 ${fresh.length} 个真实文件记录`);
+        }
+      }, 1000);
+      return;
     }
-  }, [files, settings.watchedDirectories, showToast]);
 
-  const handleOpenFile = (file: FileRecord) => {
-    // Zero-lag integrity verification before opening
+    const syncResult = fileSyncService.verifyFileOnOpen(files[0]?.path || '', files);
+    showToast(`🟢 实时核验完成：当前已收录 ${files.length} 个监控文件（0滞后）`);
+  }, [files, settings.watchedDirectories, settings.includeSubdirectories, showToast]);
+
+  const handleOpenFile = async (file: FileRecord) => {
+    if (tauriBridge.isTauri()) {
+      try {
+        const exists = await tauriBridge.verifyFileExists(file.path);
+        if (!exists) {
+          setFiles(prev => prev.filter(f => f.path.toLowerCase() !== file.path.toLowerCase()));
+          setFavorites(prev => prev.filter(fav => fav.targetPath.toLowerCase() !== file.path.toLowerCase()));
+          setSelectedFileForViewer(null);
+          showToast(`⚠️ 检测到「${file.fileName}」已在外部被删除或移动，已自动移出索引！`);
+          return;
+        }
+        await tauriBridge.openFileNative(file.path);
+        showToast(`📄 已调用系统默认应用打开：${file.fileName}`);
+        return;
+      } catch (err) {
+        console.warn('Native open failed', err);
+      }
+    }
+
+    // Zero-lag integrity verification before opening in preview
     const check = fileSyncService.verifyFileOnOpen(file.path, files);
     if (!check.exists) {
-      // Auto-prune ghost file from index and favorites immediately
       setFiles(prev => prev.filter(f => f.path.toLowerCase() !== file.path.toLowerCase()));
       setFavorites(prev => prev.filter(fav => fav.targetPath.toLowerCase() !== file.path.toLowerCase()));
       setSelectedFileForViewer(null);
@@ -196,7 +247,24 @@ export function App() {
     }
   };
 
-  const handleOpenFileByPath = (path: string) => {
+  const handleOpenFileByPath = async (path: string) => {
+    if (tauriBridge.isTauri()) {
+      try {
+        const exists = await tauriBridge.verifyFileExists(path);
+        if (!exists) {
+          setFiles(prev => prev.filter(f => f.path.toLowerCase() !== path.toLowerCase()));
+          setFavorites(prev => prev.filter(fav => fav.targetPath.toLowerCase() !== path.toLowerCase()));
+          showToast(`⚠️ 目标文件在磁盘上已不存在（已被删除或移动）`);
+          return;
+        }
+        await tauriBridge.openFileNative(path);
+        showToast(`📄 已调用系统默认应用打开：${path}`);
+        return;
+      } catch (err) {
+        console.warn('Native open failed', err);
+      }
+    }
+
     const check = fileSyncService.verifyFileOnOpen(path, files);
     if (!check.exists) {
       setFiles(prev => prev.filter(f => f.path.toLowerCase() !== path.toLowerCase()));
@@ -224,8 +292,18 @@ export function App() {
     }
   };
 
-  const handleOpenInExplorer = (item: FileRecord | string) => {
+  const handleOpenInExplorer = async (item: FileRecord | string) => {
     const path = typeof item === 'string' ? item : item.path;
+    if (tauriBridge.isTauri()) {
+      try {
+        await tauriBridge.revealInExplorerNative(path);
+        showToast(`📂 在 Windows 资源管理器中定位：${path}`);
+        return;
+      } catch (err) {
+        console.warn('Native reveal failed', err);
+      }
+    }
+
     const check = fileSyncService.verifyFileOnOpen(path, files);
     if (!check.exists) {
       setFiles(prev => prev.filter(f => f.path.toLowerCase() !== path.toLowerCase()));
@@ -236,12 +314,25 @@ export function App() {
     showToast(`📂 在 Windows 资源管理器中打开：${path}`);
   };
 
-  const handleAddWatchedDirectory = (dir: string) => {
+  const handleAddWatchedDirectory = async (dir: string) => {
     if (!settings.watchedDirectories.includes(dir)) {
       const newDirs = [...settings.watchedDirectories, dir];
       setSettings(prev => ({ ...prev, watchedDirectories: newDirs }));
 
-      // Generate seed sample files for newly added directory
+      if (tauriBridge.isTauri()) {
+        showToast(`🚀 正在索引目录: ${dir}...`);
+        await tauriBridge.startIndexing(dir, settings.includeSubdirectories);
+        setTimeout(async () => {
+          const fresh = await tauriBridge.getIndexedFiles(500, 0);
+          if (fresh && fresh.length > 0) {
+            setFiles(fresh);
+            showToast(`✅ 目录 ${dir} 索引完成，当前已加载 ${fresh.length} 个文件`);
+          }
+        }, 1200);
+        return;
+      }
+
+      // Fallback for web preview
       const folderName = dir.split('\\').pop() || 'Folder';
       const sampleFiles: FileRecord[] = [
         {
@@ -272,11 +363,20 @@ export function App() {
     }
   };
 
-  const handleRemoveWatchedDirectory = (dir: string) => {
+  const handleRemoveWatchedDirectory = async (dir: string) => {
     setSettings(prev => ({
       ...prev,
       watchedDirectories: prev.watchedDirectories.filter(d => d !== dir),
     }));
+
+    if (tauriBridge.isTauri()) {
+      await tauriBridge.removeDirectoryFromIndex(dir);
+      const fresh = await tauriBridge.getIndexedFiles(500, 0);
+      setFiles(fresh);
+      showToast(`已移除目录索引：${dir}`);
+      return;
+    }
+
     dbService.deleteFilesByDirectory(dir);
     setFiles(dbService.getFiles());
     showToast(`已移除监控目录：${dir}`);
@@ -289,6 +389,27 @@ export function App() {
         watchedDirectories: [...prev.watchedDirectories, targetPath],
         includeSubdirectories: includeSubfolders,
       }));
+    }
+
+    if (tauriBridge.isTauri()) {
+      showToast(`🚀 正在对「${targetPath}」进行真实文件扫描与构建 SQLite 索引...`);
+      await tauriBridge.startIndexing(targetPath, includeSubfolders);
+      
+      // Poll indexing status
+      const checkInterval = setInterval(async () => {
+        const st = await tauriBridge.getIndexingStatus();
+        if (st.state === 'completed' || st.state === 'error' || st.state === 'cancelled') {
+          clearInterval(checkInterval);
+          const fresh = await tauriBridge.getIndexedFiles(500, 0);
+          setFiles(fresh);
+          if (st.state === 'completed') {
+            showToast(`✅ 已完成对 ${targetPath} 的真实扫描索引（已索引 ${st.filesIndexed} 个文件，耗时 ${st.elapsedMs} ms）`);
+          } else {
+            showToast(`⚠️ 索引状态：${st.message || st.state}`);
+          }
+        }
+      }, 500);
+      return;
     }
 
     const folderName = targetPath.split('\\').pop() || 'Folder';
@@ -321,11 +442,16 @@ export function App() {
   };
 
   const handleOptimizeDatabase = async () => {
+    if (tauriBridge.isTauri()) {
+      await tauriBridge.optimizeDatabase();
+      showToast('⚡ SQLite 数据库与 FTS5 全文索引优化整理完成');
+      return;
+    }
     await new Promise(r => setTimeout(r, 600));
-    // Prune duplicates and rebuild index
     const uniqueMap = new Map<string, FileRecord>();
     files.forEach(f => uniqueMap.set(f.path.toLowerCase(), f));
     setFiles(Array.from(uniqueMap.values()));
+    showToast('⚡ 数据库与全文索引优化整理完成');
   };
 
   const handleRescanSoftware = async () => {
@@ -336,19 +462,28 @@ export function App() {
   };
 
   const handleLaunchSoftware = (soft: SoftwareRecord) => {
+    if (tauriBridge.isTauri() && soft.mainExePath) {
+      tauriBridge.openFileNative(soft.mainExePath).catch(() => {});
+    }
     showToast(`🚀 启动应用程序: ${soft.displayName} (${soft.mainExePath})`);
   };
 
   const handleOpenInstallFolder = (soft: SoftwareRecord) => {
-    showToast(`📂 打开安装目录: ${soft.installLocation || soft.mainExePath}`);
+    const p = soft.installLocation || soft.mainExePath;
+    if (tauriBridge.isTauri() && p) {
+      tauriBridge.openFolderNative(p).catch(() => {});
+    }
+    showToast(`📂 打开安装目录: ${p}`);
   };
 
   const treeNodes = useMemo(() => {
     return dbService.buildDirectoryTree(settings.watchedDirectories);
   }, [dbService, files, settings.watchedDirectories]);
 
-  const handleWipeAllData = () => {
-    // Clear localStorage and reset state completely for zero-trace portability
+  const handleWipeAllData = async () => {
+    if (tauriBridge.isTauri()) {
+      await tauriBridge.wipeIndex();
+    }
     localStorage.clear();
     setFiles([]);
     setFavorites([]);

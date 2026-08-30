@@ -24,14 +24,23 @@ export interface FileRecord {
 export interface SoftwareRecord {
   id: string;
   displayName: string;
-  publisher: string;
-  version: string;
-  installLocation: string;
-  mainExePath: string;
-  isSigned: boolean;
-  signerName: string;
-  createdTime: string;
-  updatedTime: string;
+  publisher?: string | null;
+  version?: string | null;
+  installLocation?: string | null;
+  installDate?: string | null;
+  architecture?: string | null;
+  uninstallCommand?: string | null;
+  quietUninstallCommand?: string | null;
+  estimatedSize?: number | null;
+  source: string;
+  registryKey?: string | null;
+  packageFamily?: string | null;
+  displayIcon?: string | null;
+  mainExePath?: string | null;
+  isSigned?: boolean;
+  signerName?: string | null;
+  createdTime?: string;
+  updatedTime?: string;
 }
 
 export interface FavoriteRecord {
@@ -95,3 +104,162 @@ export interface FileSafetyInfo {
 }
 
 export type NavTab = 'home' | 'tree' | 'recent' | 'software' | 'favorites' | 'encyclopedia' | 'portable' | 'settings';
+
+export interface IndexingStatus {
+  state: 'idle' | 'indexing' | 'completed' | 'cancelled' | 'error';
+  currentDirectory?: string;
+  currentFile?: string;
+  filesDiscovered: number;
+  filesIndexed: number;
+  filesSkipped: number;
+  elapsedMs: number;
+  message?: string;
+}
+
+export interface IndexStats {
+  totalFiles: number;
+  totalSizeBytes: number;
+  lastIndexedTime?: string;
+  dbSizeBytes: number;
+  indexedDirectories: string[];
+}
+
+export interface SearchFilterParams {
+  query: string;
+  category?: number;
+  startDate?: string;
+  endDate?: string;
+  isDeepSearch?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export type LeftoverItemType = 'directory' | 'file' | 'registryKey' | 'shortcut';
+export type LeftoverConfidence = 'high' | 'medium' | 'low' | 'unknown';
+export type LeftoverRisk = 'safeToReview' | 'needsReview' | 'protected' | 'unknown';
+
+export interface LeftoverCandidate {
+  id: string;
+  itemType: LeftoverItemType;
+  path: string;
+  sizeBytes?: number | null;
+  confidence: LeftoverConfidence;
+  risk: LeftoverRisk;
+  reason: string;
+  isProtected: boolean;
+  recommendedSelected: boolean;
+}
+
+export interface UninstallPrecheckInfo {
+  softwareId: string;
+  softwareName: string;
+  publisher?: string | null;
+  version?: string | null;
+  installLocation?: string | null;
+  uninstallerType: 'msi' | 'exe' | 'none';
+  uninstallerPath?: string | null;
+  uninstallerExists: boolean;
+  uninstallCommand?: string | null;
+  isRunning: boolean;
+}
+
+export interface UninstallLaunchResult {
+  success: boolean;
+  processId?: number | null;
+  message: string;
+}
+
+export interface CleanupPlan {
+  softwareId: string;
+  softwareName: string;
+  items: LeftoverCandidate[];
+  isDryRun: boolean;
+}
+
+export interface CleanupItemResult {
+  candidateId: string;
+  path: string;
+  success: boolean;
+  status: 'removed' | 'skipped_in_use' | 'skipped_protected' | 'skipped_not_found' | 'failed' | 'dry_run_simulated';
+  message: string;
+}
+
+export interface CleanupExecutionReport {
+  softwareName: string;
+  totalCandidates: number;
+  removedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  results: CleanupItemResult[];
+  isDryRun: boolean;
+  timestamp: string;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  softwareName: string;
+  timestamp: string;
+  action: string;
+  details: string;
+}
+
+export type TrustState = 'trusted' | 'lowRisk' | 'needsReview' | 'highRisk' | 'protectedSystem' | 'unknown';
+export type PathClassification =
+  | 'systemProtected'
+  | 'installedApp'
+  | 'userData'
+  | 'userDownloads'
+  | 'tempOrCache'
+  | 'userAppData'
+  | 'externalOrUnknown';
+export type SignatureStatus = 'validSignature' | 'invalidSignature' | 'unsigned' | 'unknown';
+
+export interface DigitalSignatureInfo {
+  status: SignatureStatus;
+  signer?: string | null;
+  issuer?: string | null;
+  subject?: string | null;
+  isOsComponent: boolean;
+  verificationMessage: string;
+}
+
+export interface PublisherCorrelation {
+  status: string; // 'matched' | 'discrepancy' | 'no_signer' | 'no_publisher' | 'unknown'
+  details: string;
+  publisherName?: string | null;
+  signerName?: string | null;
+}
+
+export interface ProcessAssociation {
+  isRunning: boolean;
+  processId?: number | null;
+  processName?: string | null;
+  details: string;
+}
+
+export interface HashResult {
+  algorithm: string;
+  hash: string;
+  fileSizeBytes: number;
+  calculationTimeMs: number;
+  calculatedAt: string;
+}
+
+export interface SecurityAssessment {
+  targetId: string;
+  targetName: string;
+  targetPath: string;
+  trustState: TrustState;
+  pathClassification: PathClassification;
+  fileCategory: string;
+  isExecutableOrScript: boolean;
+  isProtected: boolean;
+  signature: DigitalSignatureInfo;
+  publisherCorrelation: PublisherCorrelation;
+  processAssociation: ProcessAssociation;
+  signals: string[];
+  reasons: string[];
+  assessedAt: string;
+}
+
+

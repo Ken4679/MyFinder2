@@ -1,4 +1,5 @@
 import { AppSettings, FavoriteRecord, FileCategory, FileRecord } from '../types';
+import { initialSeedFiles, initialFavorites } from '../fixtures/sampleData';
 
 export function determineCategory(extension: string): FileCategory {
   if (!extension) return FileCategory.Other;
@@ -100,180 +101,16 @@ export const defaultSettings: AppSettings = {
   isAiModeEnabled: true,
   portableMode: true, // Permanent 100% portable green architecture
   watchedDirectories: [
-    'C:\\Users\\Admin\\Documents',
-    'C:\\Users\\Admin\\Desktop',
-    'C:\\Users\\Admin\\Downloads',
-    'C:\\Projects\\MyFinder',
+    'D:\\Documents',
+    'D:\\Workspace',
+    'D:\\Downloads',
+    'D:\\Projects\\MyFinder',
   ],
   includeSubdirectories: true,
 };
 
-export const defaultSeedFiles: FileRecord[] = [
-  {
-    id: 'f-1',
-    path: 'C:\\Users\\Admin\\Documents\\2025年产品规划及架构设计.docx',
-    fileName: '2025年产品规划及架构设计.docx',
-    extension: '.docx',
-    sizeBytes: 1542000,
-    category: FileCategory.Document,
-    createdTime: new Date(Date.now() - 3600000 * 24 * 2).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 4).toISOString(),
-    contentSnippet: 'MyFinder 2.0 架构升级方案，涵盖 SQLite FTS5 本地全文索引、WinUI 3 Fluent 界面与语义搜索组件。',
-  },
-  {
-    id: 'f-2',
-    path: 'C:\\Users\\Admin\\Documents\\财务收支与年度预算分析.xlsx',
-    fileName: '财务收支与年度预算分析.xlsx',
-    extension: '.xlsx',
-    sizeBytes: 3280000,
-    category: FileCategory.Document,
-    createdTime: new Date(Date.now() - 3600000 * 24 * 5).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 12).toISOString(),
-    contentSnippet: 'Q1-Q4 研发支出预算明细、服务器托管与云端部署成本核算。',
-  },
-  {
-    id: 'f-3',
-    path: 'C:\\Users\\Admin\\Documents\\API开发规范与接口清单.pdf',
-    fileName: 'API开发规范与接口清单.pdf',
-    extension: '.pdf',
-    sizeBytes: 4890000,
-    category: FileCategory.Document,
-    createdTime: new Date(Date.now() - 3600000 * 24 * 10).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 48).toISOString(),
-    contentSnippet: 'RESTful API 响应标准、RPC 数据交互规范及安全加密审计接口定义。',
-  },
-  {
-    id: 'f-4',
-    path: 'C:\\Users\\Admin\\Desktop\\项目发布海报_4K.png',
-    fileName: '项目发布海报_4K.png',
-    extension: '.png',
-    sizeBytes: 8940000,
-    category: FileCategory.Image,
-    createdTime: new Date(Date.now() - 3600000 * 18).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 2).toISOString(),
-  },
-  {
-    id: 'f-5',
-    path: 'C:\\Users\\Admin\\Desktop\\系统架构拓扑图.svg',
-    fileName: '系统架构拓扑图.svg',
-    extension: '.svg',
-    sizeBytes: 254000,
-    category: FileCategory.Image,
-    createdTime: new Date(Date.now() - 3600000 * 24 * 3).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 15).toISOString(),
-  },
-  {
-    id: 'f-6',
-    path: 'C:\\Users\\Admin\\Desktop\\客户需求调研问卷汇总.md',
-    fileName: '客户需求调研问卷汇总.md',
-    extension: '.md',
-    sizeBytes: 45000,
-    category: FileCategory.Document,
-    createdTime: new Date(Date.now() - 3600000 * 24).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 6).toISOString(),
-    contentSnippet: '# 需求调研总结\n用户对秒级快速查找大容量文件的响应速度及便携模式给予了高度评价。',
-  },
-  {
-    id: 'f-7',
-    path: 'C:\\Users\\Admin\\Downloads\\Node-v22.14.0-x64.msi',
-    fileName: 'Node-v22.14.0-x64.msi',
-    extension: '.msi',
-    sizeBytes: 32500000,
-    category: FileCategory.Executable,
-    createdTime: new Date(Date.now() - 3600000 * 24 * 4).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 24 * 4).toISOString(),
-  },
-  {
-    id: 'f-8',
-    path: 'C:\\Users\\Admin\\Downloads\\MyFinder_Setup_v2.0.exe',
-    fileName: 'MyFinder_Setup_v2.0.exe',
-    extension: '.exe',
-    sizeBytes: 18400000,
-    category: FileCategory.Executable,
-    createdTime: new Date(Date.now() - 3600000 * 24).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 5).toISOString(),
-  },
-  {
-    id: 'f-9',
-    path: 'C:\\Users\\Admin\\Downloads\\产品演示视频_1080P.mp4',
-    fileName: '产品演示视频_1080P.mp4',
-    extension: '.mp4',
-    sizeBytes: 68400000,
-    category: FileCategory.Video,
-    createdTime: new Date(Date.now() - 3600000 * 24 * 7).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 24 * 2).toISOString(),
-  },
-  {
-    id: 'f-10',
-    path: 'C:\\Users\\Admin\\Downloads\\提示音效_通知.wav',
-    fileName: '提示音效_通知.wav',
-    extension: '.wav',
-    sizeBytes: 350000,
-    category: FileCategory.Audio,
-    createdTime: new Date(Date.now() - 3600000 * 24 * 8).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 24 * 8).toISOString(),
-  },
-  {
-    id: 'f-11',
-    path: 'C:\\Projects\\MyFinder\\appsettings.json',
-    fileName: 'appsettings.json',
-    extension: '.json',
-    sizeBytes: 12000,
-    category: FileCategory.Config,
-    createdTime: new Date(Date.now() - 3600000 * 24 * 30).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 20).toISOString(),
-    contentSnippet: '{\n  "Database": { "Mode": "WAL", "CacheSize": 4096 },\n  "Index": { "ThrottleMs": 50 }\n}',
-  },
-  {
-    id: 'f-12',
-    path: 'C:\\Projects\\MyFinder\\BuildLogs_202508.log',
-    fileName: 'BuildLogs_202508.log',
-    extension: '.log',
-    sizeBytes: 89000,
-    category: FileCategory.Temp,
-    createdTime: new Date(Date.now() - 3600000 * 24 * 2).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 1).toISOString(),
-    contentSnippet: '[INFO] 2025-08-28 14:32:10 Build succeeded with 0 warnings, 0 errors.',
-  },
-  {
-    id: 'f-13',
-    path: 'C:\\Projects\\MyFinder\\SearchEngine.cs',
-    fileName: 'SearchEngine.cs',
-    extension: '.cs',
-    sizeBytes: 18400,
-    category: FileCategory.Document,
-    createdTime: new Date(Date.now() - 3600000 * 24 * 15).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 8).toISOString(),
-    contentSnippet: 'public class SearchEngine : ISearchEngine { public async Task<IEnumerable<FileRecord>> SearchFilesAsync(...) }',
-  }
-];
-
-export const defaultFavorites: FavoriteRecord[] = [
-  {
-    id: 'fav-1',
-    targetPath: 'C:\\Users\\Admin\\Documents\\2025年产品规划及架构设计.docx',
-    targetType: 0,
-    displayAlias: '2025年产品规划及架构设计.docx',
-    createdTime: new Date(Date.now() - 3600000 * 24).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 24).toISOString(),
-  },
-  {
-    id: 'fav-2',
-    targetPath: 'C:\\Projects\\MyFinder',
-    targetType: 1,
-    displayAlias: 'MyFinder 核心工程目录',
-    createdTime: new Date(Date.now() - 3600000 * 48).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 48).toISOString(),
-  },
-  {
-    id: 'fav-3',
-    targetPath: 'C:\\Users\\Admin\\Desktop\\项目发布海报_4K.png',
-    targetType: 0,
-    displayAlias: '发布海报_4K.png',
-    createdTime: new Date(Date.now() - 3600000 * 12).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 12).toISOString(),
-  }
-];
+export const defaultSeedFiles: FileRecord[] = initialSeedFiles;
+export const defaultFavorites: FavoriteRecord[] = initialFavorites;
 
 export function loadSettings(): AppSettings {
   try {

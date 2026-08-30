@@ -24,6 +24,7 @@ import { parseNaturalLanguageQuery } from '../services/naturalLanguageService';
 import { formatBytes } from '../services/storageService';
 import { getFileSafetyInfo } from '../services/fileSafetyService';
 import { ContextMenu, ContextMenuAction } from './ContextMenu';
+import { tauriBridge } from '../services/tauriBridge';
 
 interface HomePageProps {
   files: FileRecord[];
@@ -54,6 +55,7 @@ export const HomePage: React.FC<HomePageProps> = ({
   const [isDeepSearch, setIsDeepSearch] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [nativeResults, setNativeResults] = useState<FileRecord[] | null>(null);
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{
@@ -62,7 +64,7 @@ export const HomePage: React.FC<HomePageProps> = ({
     file: FileRecord;
   } | null>(null);
 
-  // Debounce search query input (300ms matching C# ViewModel)
+  // Debounce search query input (200ms)
   useEffect(() => {
     setIsSearching(true);
     const timer = setTimeout(() => {
@@ -80,8 +82,60 @@ export const HomePage: React.FC<HomePageProps> = ({
     return parseNaturalLanguageQuery(debouncedQuery);
   }, [debouncedQuery, settings.isAiModeEnabled]);
 
-  // Filtered search results
-  const searchResults = useMemo(() => {
+  // Async Native SQLite Search when in Tauri
+  useEffect(() => {
+    let isCancelled = false;
+    if (!debouncedQuery.trim()) {
+      setNativeResults(null);
+      return;
+    }
+
+    if (tauriBridge.isTauri()) {
+      setIsSearching(true);
+      let targetCat: number | undefined = undefined;
+      let startD: string | undefined = undefined;
+      let endD: string | undefined = undefined;
+      let q = debouncedQuery.trim();
+
+      if (settings.isAiModeEnabled && nlResult && nlResult.isNaturalLanguage) {
+        if (nlResult.extractedSearchText) {
+          q = nlResult.extractedSearchText.trim();
+        }
+        if (nlResult.targetCategory !== undefined) {
+          targetCat = nlResult.targetCategory as number;
+        }
+        if (nlResult.startDate) startD = nlResult.startDate;
+        if (nlResult.endDate) endD = nlResult.endDate;
+      }
+
+      tauriBridge.searchFiles({
+        query: q,
+        category: targetCat,
+        startDate: startD,
+        endDate: endD,
+        isDeepSearch,
+        limit: 300,
+      }).then(res => {
+        if (!isCancelled) {
+          setNativeResults(res);
+          setIsSearching(false);
+        }
+      }).catch(err => {
+        console.warn('Native SQLite search failed', err);
+        if (!isCancelled) {
+          setNativeResults(null);
+          setIsSearching(false);
+        }
+      });
+
+      return () => {
+        isCancelled = true;
+      };
+    }
+  }, [debouncedQuery, settings.isAiModeEnabled, nlResult, isDeepSearch]);
+
+  // Filtered search results fallback for web preview
+  const fallbackSearchResults = useMemo(() => {
     if (!debouncedQuery.trim()) {
       return [];
     }
@@ -132,6 +186,8 @@ export const HomePage: React.FC<HomePageProps> = ({
       }
     }).sort((a, b) => new Date(b.updatedTime).getTime() - new Date(a.updatedTime).getTime());
   }, [files, debouncedQuery, settings.isAiModeEnabled, nlResult, isDeepSearch]);
+
+  const searchResults = nativeResults !== null ? nativeResults : fallbackSearchResults;
 
   // Recent files (top 15 when no query)
   const recentFiles = useMemo(() => {

@@ -1,130 +1,31 @@
 import { SoftwareRecord } from '../types';
+import { initialSoftwareCatalog } from '../fixtures/sampleData';
+import { tauriBridge } from './tauriBridge';
 
-export const defaultSoftwareCatalog: SoftwareRecord[] = [
-  {
-    id: 'soft-1',
-    displayName: 'Visual Studio Code',
-    publisher: 'Microsoft Corporation',
-    version: '1.96.2',
-    installLocation: 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Microsoft VS Code',
-    mainExePath: 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe',
-    isSigned: true,
-    signerName: 'Microsoft Corporation (SHA256)',
-    createdTime: new Date(Date.now() - 3600000 * 24 * 120).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 24 * 5).toISOString(),
-  },
-  {
-    id: 'soft-2',
-    displayName: 'Google Chrome',
-    publisher: 'Google LLC',
-    version: '133.0.6943.98',
-    installLocation: 'C:\\Program Files\\Google\\Chrome\\Application',
-    mainExePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    isSigned: true,
-    signerName: 'Google LLC (SHA256)',
-    createdTime: new Date(Date.now() - 3600000 * 24 * 300).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 24 * 2).toISOString(),
-  },
-  {
-    id: 'soft-3',
-    displayName: 'WeChat 微信',
-    publisher: 'Tencent Technology (Shenzhen) Co., Ltd.',
-    version: '4.0.1.18',
-    installLocation: 'C:\\Program Files\\Tencent\\WeChat',
-    mainExePath: 'C:\\Program Files\\Tencent\\WeChat\\WeChat.exe',
-    isSigned: true,
-    signerName: 'Tencent Technology (Shenzhen) Co., Ltd.',
-    createdTime: new Date(Date.now() - 3600000 * 24 * 180).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 24 * 10).toISOString(),
-  },
-  {
-    id: 'soft-4',
-    displayName: 'Windows Terminal',
-    publisher: 'Microsoft Corporation',
-    version: '1.21.3231.0',
-    installLocation: 'C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal',
-    mainExePath: 'C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal\\wt.exe',
-    isSigned: true,
-    signerName: 'Microsoft Windows',
-    createdTime: new Date(Date.now() - 3600000 * 24 * 90).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 24 * 15).toISOString(),
-  },
-  {
-    id: 'soft-5',
-    displayName: 'Git for Windows',
-    publisher: 'The Git Development Community',
-    version: '2.48.1',
-    installLocation: 'C:\\Program Files\\Git',
-    mainExePath: 'C:\\Program Files\\Git\\cmd\\git.exe',
-    isSigned: true,
-    signerName: 'Johannes Schindelin (Git Developer Certificate)',
-    createdTime: new Date(Date.now() - 3600000 * 24 * 210).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 24 * 20).toISOString(),
-  },
-  {
-    id: 'soft-6',
-    displayName: 'Node.js JavaScript Runtime',
-    publisher: 'OpenJS Foundation',
-    version: '22.14.0',
-    installLocation: 'C:\\Program Files\\nodejs',
-    mainExePath: 'C:\\Program Files\\nodejs\\node.exe',
-    isSigned: true,
-    signerName: 'OpenJS Foundation (SHA256)',
-    createdTime: new Date(Date.now() - 3600000 * 24 * 60).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 24 * 60).toISOString(),
-  },
-  {
-    id: 'soft-7',
-    displayName: 'Notepad++ (64-bit x64)',
-    publisher: 'Don HO don.h@free.fr',
-    version: '8.7.6',
-    installLocation: 'C:\\Program Files\\Notepad++',
-    mainExePath: 'C:\\Program Files\\Notepad++\\notepad++.exe',
-    isSigned: true,
-    signerName: 'Don HO (GPG / Authenticode)',
-    createdTime: new Date(Date.now() - 3600000 * 24 * 140).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 24 * 12).toISOString(),
-  },
-  {
-    id: 'soft-8',
-    displayName: 'VLC Media Player',
-    publisher: 'VideoLAN Organization',
-    version: '3.0.21',
-    installLocation: 'C:\\Program Files\\VideoLAN\\VLC',
-    mainExePath: 'C:\\Program Files\\VideoLAN\\VLC\\vlc.exe',
-    isSigned: true,
-    signerName: 'VideoLAN (Open Source Code Signing)',
-    createdTime: new Date(Date.now() - 3600000 * 24 * 240).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 24 * 40).toISOString(),
-  },
-  {
-    id: 'soft-9',
-    displayName: 'Docker Desktop',
-    publisher: 'Docker Inc.',
-    version: '4.37.1',
-    installLocation: 'C:\\Program Files\\Docker\\Docker',
-    mainExePath: 'C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe',
-    isSigned: true,
-    signerName: 'Docker Inc.',
-    createdTime: new Date(Date.now() - 3600000 * 24 * 75).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 24 * 8).toISOString(),
-  },
-  {
-    id: 'soft-10',
-    displayName: 'Spotify Music',
-    publisher: 'Spotify AB',
-    version: '1.2.53.640',
-    installLocation: 'C:\\Users\\Admin\\AppData\\Roaming\\Spotify',
-    mainExePath: 'C:\\Users\\Admin\\AppData\\Roaming\\Spotify\\Spotify.exe',
-    isSigned: true,
-    signerName: 'Spotify AB (DigiCert EV Code Signing)',
-    createdTime: new Date(Date.now() - 3600000 * 24 * 160).toISOString(),
-    updatedTime: new Date(Date.now() - 3600000 * 24 * 3).toISOString(),
-  }
-];
+export const previewSoftwareCatalog: SoftwareRecord[] = initialSoftwareCatalog;
 
+/**
+ * Discovers installed software from the Windows Registry:
+ * - HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall (64-bit)
+ * - HKLM\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall (32-bit)
+ * - HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall (Per-user)
+ *
+ * In native Tauri mode, this executes the Rust Registry scanner.
+ * In browser preview mode, it gracefully returns isolated preview fixtures.
+ */
 export async function scanInstalledSoftware(): Promise<SoftwareRecord[]> {
-  // Simulate native Windows Registry scan (HKLM / HKCU Uninstall keys + Start Menu shortcuts)
-  await new Promise(resolve => setTimeout(resolve, 800));
-  return [...defaultSoftwareCatalog];
+  if (tauriBridge.isTauri()) {
+    try {
+      const realRecords = await tauriBridge.scanInstalledSoftware();
+      return realRecords;
+    } catch (err) {
+      console.warn('Native software scan failed:', err);
+      return [];
+    }
+  }
+
+  // Web preview mode fallback
+  await new Promise(resolve => setTimeout(resolve, 300));
+  return [...previewSoftwareCatalog];
 }
+

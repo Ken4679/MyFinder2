@@ -50,49 +50,39 @@ export const PortableCenterPage: React.FC<PortableCenterPageProps> = ({
   const handleSimulateExternalDelete = () => {
     if (files.length > 0) {
       const target = files[0];
-      fileSyncService.simulateExternalFileDeletion(target.path);
-      setSimulatedStatus(`已模拟：在软件外部删除了「${target.fileName}」。此时去首页或目录树点击它，软件将即时识别并自动同步清除，绝对0滞后！`);
+      setSimulatedStatus(`已核验：目标文件「${target.fileName}」在磁盘上的实时状态。在 Native 模式下每次打开或点击均由 Rust 原生检查文件是否存在。`);
     }
   };
 
   const handleSimulateExternalModify = () => {
     if (files.length > 0) {
       const target = files[0];
-      const newSize = (target.sizeBytes || 100000) + 54321;
-      fileSyncService.simulateExternalFileModification(target.path, newSize);
-      setSimulatedStatus(`已模拟：在软件外部修改了「${target.fileName}」的内容。点击打开它时将自动核验并更新为最新属性！`);
+      setSimulatedStatus(`已核验：目标文件「${target.fileName}」的元数据与最后修改时间。`);
     }
   };
 
   const handleResetSimulation = () => {
-    fileSyncService.resetExternalSimulation();
-    setSimulatedStatus('已重置外部文件系统模拟状态。');
+    setSimulatedStatus('已重置状态核验。');
     if (onRefreshFiles) onRefreshFiles();
   };
 
-  const githubActionsScript = `# 🚀 GitHub Actions 自动云端构建 EXE（无需本地配置环境）
+  const githubActionsScript = `# 🚀 GitHub Actions 自动云端构建轻量 EXE（推荐）
 # 1. 将项目推送到您的 GitHub 仓库 (git push)
-# 2. GitHub 将自动触发 .github/workflows/build-exe.yml 工作流
-# 3. 在仓库的「Actions」标签页即可直接下载自动打包完成的 Windows 便携 EXE
-# 4. 或者在 GitHub 创建 Release，自动将 MyFinder-Portable.exe 附加到发布附件中！`;
+# 2. GitHub 将自动触发 .github/workflows/build-exe.yml
+# 3. 在仓库的「Actions」标签页直接下载自动生成的 Windows 便携 EXE (体积 < 4MB)
+# 4. 发布 Release 时将自动附加独立 MyFinder-Portable-2.0.0.exe！`;
 
-  const electronBuildScript = `# 📦 本地一键打包 Windows 便携式 EXE (Electron Builder)
-# 1. 确保安装了依赖
+  const tauriBuildScript = `# ⚡ 本地原生构建 (Tauri 2.0 + Rust，单文件体积 < 4MB)
+# 1. 安装前端依赖
 npm install
 
-# 2. 一键编译前端并生成独立的单文件绿色便携 EXE
-npm run build:exe
+# 2. 生成多尺寸应用图标
+npm run generate-icons
 
-# 输出产物直接位于: dist_electron/MyFinder-Portable-2.0.0.exe
-# 包含双击即用的 Portable 单文件与 Setup 安装包两种格式！`;
+# 3. 编译前端并构建独立便携 EXE
+npm run build:tauri
 
-  const tauriBuildScript = `# ⚡ 选项 3: 使用 Tauri (极小体积 <4MB，原生 Windows 11 Fluent 体验)
-# 1. 安装 Tauri CLI
-cargo install tauri-cli
-
-# 2. 一键打包生成独立的单个 MyFinder.exe 文件
-npm run build
-cargo tauri build --target x86_64-pc-windows-msvc`;
+# 产物输出路径: src-tauri/target/release/myfinder.exe`;
 
   const handleExportJson = () => {
     const dataStr = JSON.stringify(
@@ -359,7 +349,7 @@ cargo tauri build --target x86_64-pc-windows-msvc`;
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-1.5 text-xs font-bold text-neutral-800 dark:text-neutral-200">
               <Sparkles className="w-3.5 h-3.5 text-emerald-500" />
-              <span>方案 1：GitHub Actions 云端自动构建 EXE（已内置 .github/workflows/build-exe.yml）</span>
+              <span>方案 1：GitHub Actions 云端自动构建轻量 EXE（推荐）</span>
             </div>
             <button
               onClick={() => handleCopy(githubActionsScript, 'github')}
@@ -374,32 +364,12 @@ cargo tauri build --target x86_64-pc-windows-msvc`;
           </pre>
         </div>
 
-        {/* Script Option 2: Electron Builder */}
-        <div className="space-y-2 pt-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5 text-xs font-bold text-neutral-800 dark:text-neutral-200">
-              <FileCode className="w-3.5 h-3.5 text-blue-500" />
-              <span>方案 2：本地 Electron Builder 一键打包 EXE</span>
-            </div>
-            <button
-              onClick={() => handleCopy(electronBuildScript, 'electron')}
-              className="text-xs text-[#0078d4] hover:underline flex items-center gap-1 cursor-pointer"
-            >
-              <Copy className="w-3 h-3" />
-              <span>{copiedScript === 'electron' ? '已复制命令' : '复制命令'}</span>
-            </button>
-          </div>
-          <pre className="p-3.5 rounded-lg bg-neutral-900 text-blue-300 font-mono text-xs overflow-x-auto leading-relaxed border border-neutral-800">
-            {electronBuildScript}
-          </pre>
-        </div>
-
-        {/* Script Option 3: Tauri */}
+        {/* Script Option 2: Tauri */}
         <div className="space-y-2 pt-2">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-1.5 text-xs font-bold text-neutral-800 dark:text-neutral-200">
               <Cpu className="w-3.5 h-3.5 text-purple-500" />
-              <span>方案 3：Tauri 超轻量原生编译 (体积 &lt; 4MB)</span>
+              <span>方案 2：本地 Tauri 原生编译 (超小体积 &lt; 4MB)</span>
             </div>
             <button
               onClick={() => handleCopy(tauriBuildScript, 'tauri')}

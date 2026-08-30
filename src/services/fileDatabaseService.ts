@@ -1,5 +1,6 @@
 import { FileCategory, FileRecord, NaturalLanguageQueryResult, TreeNodeModel } from '../types';
 import { determineCategory } from './storageService';
+import { tauriBridge } from './tauriBridge';
 
 export class FileDatabaseService {
   private files: FileRecord[] = [];
@@ -56,6 +57,48 @@ export class FileDatabaseService {
       this.notifyChange();
     }
     return removedCount;
+  }
+
+  // Real SQLite Async Search through Tauri IPC
+  public async searchFilesAsync(
+    queryText: string,
+    isDeepSearch: boolean = false,
+    nlResult?: NaturalLanguageQueryResult,
+    isAiMode: boolean = true
+  ): Promise<FileRecord[]> {
+    if (tauriBridge.isTauri()) {
+      try {
+        let searchKeywords = queryText.trim();
+        let targetCategory: number | undefined = undefined;
+        let startDate: string | undefined = undefined;
+        let endDate: string | undefined = undefined;
+
+        if (isAiMode && nlResult && nlResult.isNaturalLanguage) {
+          if (nlResult.extractedSearchText) {
+            searchKeywords = nlResult.extractedSearchText.trim();
+          }
+          if (nlResult.targetCategory !== undefined) {
+            targetCategory = nlResult.targetCategory as number;
+          }
+          if (nlResult.startDate) startDate = nlResult.startDate;
+          if (nlResult.endDate) endDate = nlResult.endDate;
+        }
+
+        const results = await tauriBridge.searchFiles({
+          query: searchKeywords,
+          category: targetCategory,
+          startDate,
+          endDate,
+          isDeepSearch,
+          limit: 300,
+        });
+        return results;
+      } catch (err) {
+        console.warn('Native SQLite search failed, falling back to local cache', err);
+      }
+    }
+
+    return this.searchFiles(queryText, isDeepSearch, nlResult, isAiMode);
   }
 
   // FTS5 and LIKE Search implementation (matching C# BasicSearchEngine)

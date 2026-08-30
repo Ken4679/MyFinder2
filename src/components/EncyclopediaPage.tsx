@@ -117,7 +117,7 @@ export const EncyclopediaPage: React.FC = () => {
           </div>
           <div className="flex gap-1.5">
             <button
-              onClick={() => setDiagnoseInput('C:\\Users\\Admin\\Documents\\2025规划.docx')}
+              onClick={() => setDiagnoseInput('D:\\Documents\\2025规划.docx')}
               className="px-2.5 py-1.5 text-xs rounded-md bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-600 dark:text-neutral-300 transition-colors"
             >
               测 Word 文档
