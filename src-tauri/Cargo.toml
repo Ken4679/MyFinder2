@@ -1,0 +1,15 @@
+[package]
+name = "myfinder"
+version = "2.0.0"
+description = "MyFinder - Windows 11 Fluent File Finder & Software Manager"
+authors = ["MyFinder Team"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

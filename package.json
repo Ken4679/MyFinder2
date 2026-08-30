@@ -9,7 +9,9 @@
     "dev": "vite --host 0.0.0.0 --port 3000",
     "build": "tsc && vite build",
     "preview": "vite preview --port 3000 --host 0.0.0.0",
-    "build:exe": "npm run build && electron-builder --win --config electron-builder.json"
+    "tauri": "tauri",
+    "build:tauri": "npm run build && tauri build",
+    "build:exe": "npm run build && electron-builder --win --config electron-builder.json --publish never"
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -20,6 +22,8 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.6",
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/cli": "^2.0.0",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",

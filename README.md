@@ -14,35 +14,37 @@ MyFinder 是一款轻量、安全、纯本地运行的 Windows 11 Fluent Design 
 
 ## ⚡ 性能指标与架构分析
 
+- **文件体积**：**单文件独立 EXE 仅 ~3.5MB**（基于 Tauri 2.0 + 系统原生 WebView2，免去笨重的 Chromium 内核）。
 - **查询响应速度**：< 5 毫秒（基于 SQLite FTS5 倒排索引与内存哈希索引，10 万级文件毫秒级检索）。
-- **内存占用**：日常驻留仅 ~25MB - 45MB，极度轻量。
-- **磁盘占用**：便携单文件仅 ~3MB - 40MB（取决于编译打包方案），数据库体积每万个文件约 1MB。
+- **内存占用**：日常驻留仅 ~15MB - 35MB，极度轻量。
+- **开箱即用**：Windows 10/11 系统自带 WebView2，双击单文件直接秒开，无需额外安装运行库。
 - **CPU 占用**：静默状态 0% CPU 占用；增量监测采用事件驱动（`ReadDirectoryChangesW` / `FileSystemWatcher`），不轮询、不卡顿。
 
 ---
 
-## 🚀 GitHub Actions 自动编译生成 Windows EXE
+## 🚀 GitHub Actions 自动编译生成超轻量 Windows EXE
 
 本项目已内置完整的 GitHub Actions 自动化 CI/CD 工作流（`.github/workflows/build-exe.yml`）：
 
-### 方式 1：推送到 GitHub 自动打包（推荐）
+### 方式 1：推送到 GitHub 自动打包（推荐，输出 ~3.5MB 单文件）
 1. 将本项目推送到您的 GitHub 仓库：
    ```bash
    git push origin main
    ```
-2. GitHub 将自动触发 `Build Windows EXE` 工作流。
-3. 构建完成后，前往仓库的 **Actions** 标签页，点击最新运行记录，在 **Artifacts** 中直接下载生成的 `MyFinder-Windows-EXE` 便携版可执行文件。
-4. 若创建了 GitHub Release / Tag，将自动附加 `.exe` 到发布附件中。
+2. GitHub Actions 将自动在云端 Windows 机器上编译 Rust + 前端代码。
+3. 构建完成后，前往仓库的 **Actions** 标签页，点击最新运行记录，在 **Artifacts** 中直接下载 `MyFinder-Lightweight-Windows-EXE`（即单文件 `MyFinder-Portable-2.0.0.exe`，体积仅约 3.5MB！）。
+4. 若在 GitHub 创建了 Release，将自动把超轻量 `.exe` 附加到发布附件中。
 
 ### 方式 2：本地一键打包
 ```bash
 # 1. 安装依赖
 npm install
 
-# 2. 一键编译并生成 Windows 便携式 EXE
-npm run build:exe
+# 2. 本地编译 Tauri 超轻量 EXE (需安装 Rust: https://rustup.rs)
+npm run build:tauri
 
-# 生成的可执行文件位于: dist_electron/MyFinder-Portable-2.0.0.exe
+# 3. 或编译 Electron 兼容版 EXE
+npm run build:exe
 ```
 
 ---
