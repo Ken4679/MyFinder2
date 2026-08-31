@@ -144,7 +144,7 @@ pub fn verify_file_exists(file_path: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub fn open_file_native(file_path: String, app_handle: AppHandle) -> Result<(), String> {
+pub fn open_file_native(file_path: String, _app_handle: AppHandle) -> Result<(), String> {
     let path = Path::new(&file_path);
     if !path.exists() {
         return Err(format!("文件在磁盘上不存在: {}", file_path));
@@ -154,10 +154,12 @@ pub fn open_file_native(file_path: String, app_handle: AppHandle) -> Result<(), 
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
-        let _ = Command::new("cmd")
-            .raw_arg(format!("/c start \"\" \"{}\"", file_path))
+        // Native Windows URL/File protocol handler directly without invoking cmd.exe shell
+        let _ = Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", &file_path])
             .creation_flags(CREATE_NO_WINDOW)
-            .spawn();
+            .spawn()
+            .map_err(|e| format!("打开文件失败: {}", e))?;
         return Ok(());
     }
 

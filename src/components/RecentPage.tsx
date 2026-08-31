@@ -117,10 +117,10 @@ export const RecentPage: React.FC<RecentPageProps> = ({
           </div>
           <div>
             <h1 className="text-lg font-semibold text-[#1c1c1c] dark:text-[#f3f3f3]">
-              最近文件
+              最近修改的文件
             </h1>
             <p className="text-xs text-neutral-500 dark:text-neutral-400">
-              按时间顺序追踪所有被索引与修改的本地文件
+              基于本地真实修改时间戳 (Last Modified Time) 排序的索引文件列表
             </p>
           </div>
         </div>

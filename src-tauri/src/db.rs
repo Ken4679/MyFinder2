@@ -143,7 +143,22 @@ impl Database {
                     END;",
                     [],
                 );
+
+                // Backfill existing data if table had records prior to FTS5 creation
+                let _ = tx.execute(
+                    "INSERT OR IGNORE INTO files_fts(id, file_name, path, directory, extension)
+                     SELECT id, file_name, path, directory, extension FROM files;",
+                    [],
+                );
             }
+        } else {
+            // Ensure FTS table has all records backfilled
+            let _ = tx.execute(
+                "INSERT OR IGNORE INTO files_fts(id, file_name, path, directory, extension)
+                 SELECT id, file_name, path, directory, extension FROM files
+                 WHERE id NOT IN (SELECT id FROM files_fts);",
+                [],
+            );
         }
 
         tx.commit()?;
