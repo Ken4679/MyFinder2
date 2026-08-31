@@ -24,6 +24,8 @@ import { parseNaturalLanguageQuery } from '../services/naturalLanguageService';
 import { formatBytes } from '../services/storageService';
 import { getFileSafetyInfo } from '../services/fileSafetyService';
 import { ContextMenu, ContextMenuAction } from './ContextMenu';
+import { SecurityAssessmentModal } from './SecurityAssessmentModal';
+import { Shield } from 'lucide-react';
 import { tauriBridge } from '../services/tauriBridge';
 
 interface HomePageProps {
@@ -63,6 +65,7 @@ export const HomePage: React.FC<HomePageProps> = ({
     y: number;
     file: FileRecord;
   } | null>(null);
+  const [securityInspectFile, setSecurityInspectFile] = useState<FileRecord | null>(null);
 
   // Debounce search query input (200ms)
   useEffect(() => {
@@ -241,6 +244,11 @@ export const HomePage: React.FC<HomePageProps> = ({
       label: '查看文件详情与安全评估',
       icon: <Info className="w-4 h-4 text-blue-500" />,
       onClick: () => onOpenFile(file),
+    },
+    {
+      label: '深度信任与签名审计 (Phase 5)',
+      icon: <Shield className="w-4 h-4 text-indigo-500" />,
+      onClick: () => setSecurityInspectFile(file),
     },
     {
       label: '复制文件完整路径',
@@ -596,6 +604,15 @@ export const HomePage: React.FC<HomePageProps> = ({
           y={contextMenu.y}
           onClose={() => setContextMenu(null)}
           actions={getContextMenuActions(contextMenu.file)}
+        />
+      )}
+
+      {/* Security Assessment Modal */}
+      {securityInspectFile && (
+        <SecurityAssessmentModal
+          targetPath={securityInspectFile.path}
+          targetName={securityInspectFile.fileName}
+          onClose={() => setSecurityInspectFile(null)}
         />
       )}
     </div>

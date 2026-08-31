@@ -21,6 +21,8 @@ import {
 import { TreeNodeModel, FileCategory, FileRecord, FavoriteRecord } from '../types';
 import { formatBytes } from '../services/storageService';
 import { ContextMenu, ContextMenuAction } from './ContextMenu';
+import { SecurityAssessmentModal } from './SecurityAssessmentModal';
+import { Shield } from 'lucide-react';
 
 interface TreePageProps {
   treeNodes: TreeNodeModel[];
@@ -48,6 +50,7 @@ export const TreePage: React.FC<TreePageProps> = ({
     y: number;
     node: TreeNodeModel;
   } | null>(null);
+  const [securityInspectNode, setSecurityInspectNode] = useState<TreeNodeModel | null>(null);
 
   const toggleExpand = (id: string) => {
     setExpandedMap(prev => ({
@@ -120,6 +123,11 @@ export const TreePage: React.FC<TreePageProps> = ({
           });
         }
       },
+    },
+    {
+      label: '深度信任与签名审计 (Phase 5)',
+      icon: <Shield className="w-4 h-4 text-indigo-500" />,
+      onClick: () => setSecurityInspectNode(node),
     },
     {
       label: '复制完整路径',
@@ -339,6 +347,15 @@ export const TreePage: React.FC<TreePageProps> = ({
           y={contextMenu.y}
           onClose={() => setContextMenu(null)}
           actions={getContextMenuActions(contextMenu.node)}
+        />
+      )}
+
+      {/* Security Assessment Modal */}
+      {securityInspectNode && (
+        <SecurityAssessmentModal
+          targetPath={securityInspectNode.fullPath}
+          targetName={securityInspectNode.name}
+          onClose={() => setSecurityInspectNode(null)}
         />
       )}
     </div>

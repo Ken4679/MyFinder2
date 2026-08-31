@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   X,
   FileText,
@@ -10,11 +10,13 @@ import {
   ShieldAlert,
   AlertTriangle,
   Tag,
-  Info
+  Info,
+  Shield
 } from 'lucide-react';
 import { FileRecord, FileCategory } from '../types';
 import { formatBytes } from '../services/storageService';
 import { getFileSafetyInfo } from '../services/fileSafetyService';
+import { SecurityAssessmentModal } from './SecurityAssessmentModal';
 
 interface FileViewerModalProps {
   file: FileRecord | null;
@@ -31,6 +33,7 @@ export const FileViewerModal: React.FC<FileViewerModalProps> = ({
   onClose,
   onOpenInExplorer,
 }) => {
+  const [showSecurityAssessment, setShowSecurityAssessment] = useState(false);
   if (!file) return null;
 
   const safetyInfo = getFileSafetyInfo(file.extension, file.path);
@@ -120,6 +123,16 @@ export const FileViewerModal: React.FC<FileViewerModalProps> = ({
               </div>
               <div>
                 <span className="font-semibold opacity-80">推荐打开方式：</span> {safetyInfo.openRecommendation}
+              </div>
+              <div className="pt-1.5 flex justify-end">
+                <button
+                  id="open-security-assessment-btn"
+                  onClick={() => setShowSecurityAssessment(true)}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium bg-blue-50 dark:bg-blue-950/60 text-[#0078d4] dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/60 transition-colors border border-blue-200/60 dark:border-blue-800/60 cursor-pointer"
+                >
+                  <Shield className="w-3.5 h-3.5" />
+                  <span>执行本地信任与安全审计 (Phase 5)</span>
+                </button>
               </div>
             </div>
           </div>
@@ -240,6 +253,14 @@ export const FileViewerModal: React.FC<FileViewerModalProps> = ({
           </div>
         </div>
       </div>
+
+      {showSecurityAssessment && (
+        <SecurityAssessmentModal
+          targetPath={file.path}
+          targetName={file.fileName}
+          onClose={() => setShowSecurityAssessment(false)}
+        />
+      )}
     </div>
   );
 };

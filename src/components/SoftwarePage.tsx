@@ -22,6 +22,7 @@ import {
 import { AuditLogEntry, SoftwareRecord } from '../types';
 import { formatBytes } from '../services/storageService';
 import { UninstallWizardModal } from './UninstallWizardModal';
+import { SecurityAssessmentModal } from './SecurityAssessmentModal';
 import { tauriBridge } from '../services/tauriBridge';
 
 interface SoftwarePageProps {
@@ -42,6 +43,7 @@ export const SoftwarePage: React.FC<SoftwarePageProps> = ({
   const [filterQuery, setFilterQuery] = useState('');
   const [archFilter, setArchFilter] = useState<'all' | 'x64' | 'x86' | 'user'>('all');
   const [selectedSoftware, setSelectedSoftware] = useState<SoftwareRecord | null>(null);
+  const [securityInspectTarget, setSecurityInspectTarget] = useState<SoftwareRecord | null>(null);
   const [uninstallTarget, setUninstallTarget] = useState<SoftwareRecord | null>(null);
   const [showAuditLogs, setShowAuditLogs] = useState(false);
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
@@ -275,11 +277,18 @@ export const SoftwarePage: React.FC<SoftwarePageProps> = ({
                 <div className="flex items-center justify-between pt-2 border-t border-black/5 dark:border-white/5 pl-9">
                   <div className="flex items-center gap-1">
                     <button
+                      onClick={() => setSecurityInspectTarget(soft)}
+                      className="flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 transition-colors cursor-pointer"
+                    >
+                      <Shield className="w-3 h-3" />
+                      <span>信任审计</span>
+                    </button>
+                    <button
                       onClick={() => setSelectedSoftware(soft)}
                       className="flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium text-neutral-500 dark:text-neutral-400 hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer"
                     >
                       <Info className="w-3 h-3" />
-                      <span>查看元数据</span>
+                      <span>元数据</span>
                     </button>
                     <button
                       onClick={() => setUninstallTarget(soft)}
@@ -446,17 +455,30 @@ export const SoftwarePage: React.FC<SoftwarePageProps> = ({
 
             {/* Modal Footer */}
             <div className="p-3 bg-neutral-50 dark:bg-[#222] border-t border-black/5 dark:border-white/5 flex items-center justify-between">
-              <button
-                onClick={() => {
-                  const target = selectedSoftware;
-                  setSelectedSoftware(null);
-                  setUninstallTarget(target);
-                }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-900/60 transition-colors cursor-pointer border border-rose-200/60 dark:border-rose-800/60"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>进入安全卸载向导</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    const target = selectedSoftware;
+                    setSelectedSoftware(null);
+                    setSecurityInspectTarget(target);
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/60 transition-colors cursor-pointer border border-blue-200/60 dark:border-blue-800/60"
+                >
+                  <Shield className="w-3.5 h-3.5" />
+                  <span>信任与签名审计</span>
+                </button>
+                <button
+                  onClick={() => {
+                    const target = selectedSoftware;
+                    setSelectedSoftware(null);
+                    setUninstallTarget(target);
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-900/60 transition-colors cursor-pointer border border-rose-200/60 dark:border-rose-800/60"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>安全卸载向导</span>
+                </button>
+              </div>
 
               <button
                 onClick={() => setSelectedSoftware(null)}
@@ -467,6 +489,19 @@ export const SoftwarePage: React.FC<SoftwarePageProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Phase 5 Security & Trust Assessment Modal for Software */}
+      {securityInspectTarget && (
+        <SecurityAssessmentModal
+          targetPath={
+            securityInspectTarget.installLocation ||
+            securityInspectTarget.mainExePath ||
+            `C:\\Program Files\\${securityInspectTarget.displayName}\\${securityInspectTarget.displayName}.exe`
+          }
+          targetName={securityInspectTarget.displayName}
+          onClose={() => setSecurityInspectTarget(null)}
+        />
       )}
 
       {/* Phase 4 Safe Uninstall & Leftover Wizard Modal */}
