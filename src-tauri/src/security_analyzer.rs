@@ -363,7 +363,7 @@ impl SecurityAnalyzer {
         // 4. Synthesize Multi-Signal Trust State & Explainable Reasons
         let mut signals = Vec::new();
         let mut reasons = Vec::new();
-        let trust_state;
+        let mut trust_state;
 
         // Collect signals
         match path_classification {
