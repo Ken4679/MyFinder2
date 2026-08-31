@@ -308,6 +308,10 @@ impl Database {
         }
     }
 
+    pub fn search_files(&self, filter: SearchFilter) -> Result<Vec<FileRecord>> {
+        self.search(&filter)
+    }
+
     pub fn search(&self, filter: &SearchFilter) -> Result<Vec<FileRecord>> {
         let query_trimmed = filter.query.trim();
         let limit = filter.limit.unwrap_or(200).min(500);
@@ -605,6 +609,50 @@ mod tests {
             .unwrap();
         assert_eq!(res3.len(), 1);
         assert_eq!(res3[0].id, "3");
+
+        // 4. Single-word fragment tests: "预算", "设计", "架构"
+        let res_budget = db
+            .search_files(SearchFilter {
+                query: "预算".to_string(),
+                category: None,
+                start_date: None,
+                end_date: None,
+                is_deep_search: false,
+                limit: Some(10),
+                offset: Some(0),
+            })
+            .unwrap();
+        assert_eq!(res_budget.len(), 1);
+        assert_eq!(res_budget[0].file_name, "2024年第一季度财务预算报告.xlsx");
+
+        let res_design = db
+            .search_files(SearchFilter {
+                query: "设计".to_string(),
+                category: None,
+                start_date: None,
+                end_date: None,
+                is_deep_search: false,
+                limit: Some(10),
+                offset: Some(0),
+            })
+            .unwrap();
+        assert_eq!(res_design.len(), 1);
+        assert_eq!(res_design[0].file_name, "用户界面设计规范_v2.sketch");
+
+        // 5. Extension search
+        let res_ext = db
+            .search_files(SearchFilter {
+                query: "pdf".to_string(),
+                category: None,
+                start_date: None,
+                end_date: None,
+                is_deep_search: false,
+                limit: Some(10),
+                offset: Some(0),
+            })
+            .unwrap();
+        assert_eq!(res_ext.len(), 1);
+        assert_eq!(res_ext[0].id, "2");
     }
 
     #[test]

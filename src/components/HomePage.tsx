@@ -393,7 +393,7 @@ export const HomePage: React.FC<HomePageProps> = ({
             {searchQuery ? (
               <span>搜索结果 ({searchResults.length})</span>
             ) : (
-              <span>最近索引与访问的文件 ({recentFiles.length})</span>
+              <span>最近修改与索引的文件 ({recentFiles.length})</span>
             )}
           </div>
 
