@@ -248,24 +248,27 @@ impl Database {
         let prefix = format!("{}\\%", normalized);
 
         // Fetch existing recorded paths under this directory
-        let mut stmt = self.conn.prepare(
-            "SELECT path FROM files WHERE path = ?1 OR path LIKE ?2 COLLATE NOCASE;",
-        )?;
-        let rows = stmt.query_map(params![normalized, prefix], |r| r.get::<_, String>(0))?;
+        let to_delete = {
+            let mut stmt = self.conn.prepare(
+                "SELECT path FROM files WHERE path = ?1 OR path LIKE ?2 COLLATE NOCASE;",
+            )?;
+            let rows = stmt.query_map(params![normalized, prefix], |r| r.get::<_, String>(0))?;
 
-        let valid_set: std::collections::HashSet<String> = current_valid_paths
-            .iter()
-            .map(|p| p.to_lowercase())
-            .collect();
+            let valid_set: std::collections::HashSet<String> = current_valid_paths
+                .iter()
+                .map(|p| p.to_lowercase())
+                .collect();
 
-        let mut to_delete = Vec::new();
-        for r in rows {
-            if let Ok(p) = r {
-                if !valid_set.contains(&p.to_lowercase()) {
-                    to_delete.push(p);
+            let mut list = Vec::new();
+            for r in rows {
+                if let Ok(p) = r {
+                    if !valid_set.contains(&p.to_lowercase()) {
+                        list.push(p);
+                    }
                 }
             }
-        }
+            list
+        };
 
         if to_delete.is_empty() {
             return Ok(0);

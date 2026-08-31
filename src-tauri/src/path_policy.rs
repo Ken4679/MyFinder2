@@ -1,4 +1,4 @@
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
 pub struct PathPolicy;
 
@@ -67,7 +67,7 @@ impl PathPolicy {
             return true;
         }
 
-        let first = parts[0];
+        let _first = parts[0];
         let second = parts.get(1).copied().unwrap_or("");
 
         // Immediate root directory (e.g. "C:\Windows", "C:\Users", "C:\ProgramData")

@@ -1,6 +1,5 @@
 use crate::models::SoftwareRecord;
 use std::collections::HashMap;
-use std::path::Path;
 use uuid::Uuid;
 
 pub struct SoftwareScanner;

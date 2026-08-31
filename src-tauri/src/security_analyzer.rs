@@ -3,7 +3,6 @@ use crate::models::{
     SecurityAssessment, SignatureStatus, SoftwareRecord, TrustState,
 };
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -364,7 +363,7 @@ impl SecurityAnalyzer {
         // 4. Synthesize Multi-Signal Trust State & Explainable Reasons
         let mut signals = Vec::new();
         let mut reasons = Vec::new();
-        let mut trust_state = TrustState::Unknown;
+        let trust_state;
 
         // Collect signals
         match path_classification {

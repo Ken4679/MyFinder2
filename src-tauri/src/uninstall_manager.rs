@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use uuid::Uuid;
 
 #[cfg(target_os = "windows")]
-use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS, KEY_READ};
+use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS};
 #[cfg(target_os = "windows")]
 use winreg::RegKey;
 
@@ -133,11 +133,7 @@ impl UninstallManager {
             publisher: software.publisher.clone(),
             version: software.version.clone(),
             install_location: software.install_location.clone(),
-            uninstaller_type: match uninstaller_type {
-                "msi" => crate::models::UninstallerType::Msi,
-                "exe" => crate::models::UninstallerType::Exe,
-                _ => crate::models::UninstallerType::None,
-            },
+            uninstaller_type: uninstaller_type.to_string(),
             uninstaller_path: if exe_path.is_empty() {
                 None
             } else {

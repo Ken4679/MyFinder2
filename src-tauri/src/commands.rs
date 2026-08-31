@@ -235,7 +235,7 @@ pub fn precheck_software_uninstall(software: SoftwareRecord) -> Result<Uninstall
 
 #[tauri::command]
 pub fn launch_software_uninstaller(software: SoftwareRecord) -> Result<UninstallLaunchResult, String> {
-    UninstallManager::launch_official_uninstaller(&software)
+    Ok(UninstallManager::launch_official_uninstaller(&software))
 }
 
 #[tauri::command]
