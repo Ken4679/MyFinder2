@@ -4,6 +4,7 @@
 mod commands;
 mod db;
 mod models;
+pub mod path_policy;
 mod scanner;
 mod security_analyzer;
 mod software_scanner;

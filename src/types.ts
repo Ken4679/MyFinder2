@@ -107,12 +107,13 @@ export interface FileSafetyInfo {
 export type NavTab = 'home' | 'tree' | 'recent' | 'software' | 'favorites' | 'encyclopedia' | 'portable' | 'settings';
 
 export interface IndexingStatus {
-  state: 'idle' | 'indexing' | 'completed' | 'cancelled' | 'error';
+  state: 'idle' | 'indexing' | 'cancelling' | 'completed' | 'cancelled' | 'error';
   currentDirectory?: string;
   currentFile?: string;
   filesDiscovered: number;
   filesIndexed: number;
   filesSkipped: number;
+  filesFailed?: number;
   elapsedMs: number;
   message?: string;
 }
@@ -181,7 +182,17 @@ export interface CleanupItemResult {
   candidateId: string;
   path: string;
   success: boolean;
-  status: 'removed' | 'skipped_in_use' | 'skipped_protected' | 'skipped_not_found' | 'failed' | 'dry_run_simulated';
+  status:
+    | 'removed'
+    | 'skipped_in_use'
+    | 'skipped_protected'
+    | 'skipped_not_found'
+    | 'skipped_unauthorized'
+    | 'skipped_tampered'
+    | 'skipped_symlink'
+    | 'skipped_backup_failed'
+    | 'failed'
+    | 'dry_run_simulated';
   message: string;
 }
 

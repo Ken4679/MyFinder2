@@ -496,3 +496,159 @@ impl Database {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_db() -> Database {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA foreign_keys = ON;",
+        )
+        .unwrap();
+
+        let mut db = Database {
+            conn,
+            db_path: PathBuf::from(":memory:"),
+        };
+        db.init_schema().unwrap();
+        db
+    }
+
+    #[test]
+    fn test_chinese_and_english_search() {
+        let mut db = create_test_db();
+        let records = vec![
+            FileRecord {
+                id: "1".to_string(),
+                path: r"D:\Documents\2024年第一季度财务预算报告.xlsx".to_string(),
+                file_name: "2024年第一季度财务预算报告.xlsx".to_string(),
+                directory: r"D:\Documents".to_string(),
+                extension: ".xlsx".to_string(),
+                size_bytes: 45000,
+                category: 1,
+                created_time: "2024-01-01T00:00:00Z".to_string(),
+                updated_time: "2024-01-15T00:00:00Z".to_string(),
+                indexed_time: "2024-01-15T00:00:00Z".to_string(),
+            },
+            FileRecord {
+                id: "2".to_string(),
+                path: r"D:\Projects\Rust\MyFinder_architecture.pdf".to_string(),
+                file_name: "MyFinder_architecture.pdf".to_string(),
+                directory: r"D:\Projects\Rust".to_string(),
+                extension: ".pdf".to_string(),
+                size_bytes: 120000,
+                category: 1,
+                created_time: "2024-02-01T00:00:00Z".to_string(),
+                updated_time: "2024-02-10T00:00:00Z".to_string(),
+                indexed_time: "2024-02-10T00:00:00Z".to_string(),
+            },
+            FileRecord {
+                id: "3".to_string(),
+                path: r"D:\Design\用户界面设计规范_v2.sketch".to_string(),
+                file_name: "用户界面设计规范_v2.sketch".to_string(),
+                directory: r"D:\Design".to_string(),
+                extension: ".sketch".to_string(),
+                size_bytes: 850000,
+                category: 2,
+                created_time: "2024-03-01T00:00:00Z".to_string(),
+                updated_time: "2024-03-05T00:00:00Z".to_string(),
+                indexed_time: "2024-03-05T00:00:00Z".to_string(),
+            },
+        ];
+
+        db.upsert_batch(&records).unwrap();
+
+        // 1. Chinese substring search: "财务预算"
+        let res1 = db
+            .search_files(SearchFilter {
+                query: "财务预算".to_string(),
+                category: None,
+                start_date: None,
+                end_date: None,
+                is_deep_search: false,
+                limit: Some(10),
+                offset: Some(0),
+            })
+            .unwrap();
+        assert_eq!(res1.len(), 1);
+        assert_eq!(res1[0].id, "1");
+
+        // 2. English keyword search: "MyFinder"
+        let res2 = db
+            .search_files(SearchFilter {
+                query: "MyFinder".to_string(),
+                category: None,
+                start_date: None,
+                end_date: None,
+                is_deep_search: false,
+                limit: Some(10),
+                offset: Some(0),
+            })
+            .unwrap();
+        assert_eq!(res2.len(), 1);
+        assert_eq!(res2[0].id, "2");
+
+        // 3. Category and extension search
+        let res3 = db
+            .search_files(SearchFilter {
+                query: "规范".to_string(),
+                category: Some(2),
+                start_date: None,
+                end_date: None,
+                is_deep_search: false,
+                limit: Some(10),
+                offset: Some(0),
+            })
+            .unwrap();
+        assert_eq!(res3.len(), 1);
+        assert_eq!(res3[0].id, "3");
+    }
+
+    #[test]
+    fn test_fts5_sync_and_prune() {
+        let mut db = create_test_db();
+        let record = FileRecord {
+            id: "100".to_string(),
+            path: r"D:\Work\contract_draft.docx".to_string(),
+            file_name: "contract_draft.docx".to_string(),
+            directory: r"D:\Work".to_string(),
+            extension: ".docx".to_string(),
+            size_bytes: 2048,
+            category: 1,
+            created_time: "2024-01-01T00:00:00Z".to_string(),
+            updated_time: "2024-01-01T00:00:00Z".to_string(),
+            indexed_time: "2024-01-01T00:00:00Z".to_string(),
+        };
+
+        db.upsert_batch(&[record]).unwrap();
+
+        let count: i64 = db
+            .conn
+            .query_row("SELECT count(*) FROM files_fts WHERE id = '100';", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // Test pruning missing file
+        db.prune_missing_files_in_directory(r"D:\Work", &[]).unwrap();
+        let remaining: i64 = db
+            .conn
+            .query_row("SELECT count(*) FROM files WHERE id = '100';", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(remaining, 0);
+
+        let fts_remaining: i64 = db
+            .conn
+            .query_row("SELECT count(*) FROM files_fts WHERE id = '100';", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(fts_remaining, 0);
+    }
+}

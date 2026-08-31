@@ -1,8 +1,8 @@
 use crate::db::Database;
 use crate::models::{FileCategory, FileRecord, IndexingStatus};
+use crate::path_policy::PathPolicy;
 use chrono::{DateTime, Utc};
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -39,6 +39,7 @@ impl Scanner {
             status.files_discovered = 0;
             status.files_indexed = 0;
             status.files_skipped = 0;
+            status.files_failed = 0;
             status.elapsed_ms = 0;
             status.message = Some(format!("开始扫描目录: {}", target_dir));
         }
@@ -50,7 +51,7 @@ impl Scanner {
 
         let walker = WalkDir::new(target_path)
             .max_depth(max_depth)
-            .follow_links(false) // Safe: do NOT follow symlinks/reparse points to avoid recursion
+            .follow_links(false) // Safe: do NOT follow symlinks/reparse points to avoid recursion loops
             .into_iter();
 
         let mut batch: Vec<FileRecord> = Vec::with_capacity(500);
@@ -58,14 +59,20 @@ impl Scanner {
         let mut total_indexed: u64 = 0;
         let mut total_discovered: u64 = 0;
         let mut total_skipped: u64 = 0;
+        let mut total_failed: u64 = 0;
+        let mut last_error_msg: Option<String> = None;
 
         for entry_res in walker {
             if cancel_token.load(Ordering::Relaxed) {
-                // User requested cancellation
+                // User requested cancellation - worker safely stops now
                 if let Ok(mut status) = status_mutex.lock() {
                     status.state = "cancelled".to_string();
+                    status.files_discovered = total_discovered;
+                    status.files_indexed = total_indexed;
+                    status.files_skipped = total_skipped;
+                    status.files_failed = total_failed;
                     status.elapsed_ms = start_time.elapsed().as_millis() as u64;
-                    status.message = Some("用户取消了扫描任务".to_string());
+                    status.message = Some("扫描任务已中止（未执行清理裁剪）".to_string());
                 }
                 return Ok(total_indexed);
             }
@@ -100,7 +107,7 @@ impl Scanner {
                 }
             };
 
-            let full_path_str = normalize_path(path);
+            let full_path_str = PathPolicy::normalize(path);
             let file_name = path
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
@@ -108,7 +115,7 @@ impl Scanner {
 
             let directory = path
                 .parent()
-                .map(|p| normalize_path(p))
+                .map(|p| PathPolicy::normalize(p))
                 .unwrap_or_default();
 
             let extension = path
@@ -159,16 +166,24 @@ impl Scanner {
 
             // Flush batch to SQLite in a single transaction every 500 items
             if batch.len() >= 500 {
+                let mut write_err = false;
                 if let Ok(mut db) = db_mutex.lock() {
-                    let _ = db.upsert_batch(&batch);
+                    if let Err(e) = db.upsert_batch(&batch) {
+                        total_failed += batch.len() as u64;
+                        last_error_msg = Some(format!("数据库批量写入失败: {}", e));
+                        write_err = true;
+                    }
                 }
-                total_indexed += batch.len() as u64;
+                if !write_err {
+                    total_indexed += batch.len() as u64;
+                }
                 batch.clear();
 
                 if let Ok(mut status) = status_mutex.lock() {
                     status.files_discovered = total_discovered;
                     status.files_indexed = total_indexed;
                     status.files_skipped = total_skipped;
+                    status.files_failed = total_failed;
                     status.elapsed_ms = start_time.elapsed().as_millis() as u64;
                 }
             }
@@ -176,43 +191,61 @@ impl Scanner {
 
         // Flush remaining records
         if !batch.is_empty() {
+            let mut write_err = false;
             if let Ok(mut db) = db_mutex.lock() {
-                let _ = db.upsert_batch(&batch);
+                if let Err(e) = db.upsert_batch(&batch) {
+                    total_failed += batch.len() as u64;
+                    last_error_msg = Some(format!("数据库写入失败: {}", e));
+                    write_err = true;
+                }
             }
-            total_indexed += batch.len() as u64;
+            if !write_err {
+                total_indexed += batch.len() as u64;
+            }
             batch.clear();
         }
 
-        // Reconcile and prune files that were deleted from disk only if scan was recursive and completed normally
-        if recursive {
-            if let Ok(mut db) = db_mutex.lock() {
-                let _ = db.prune_missing_files_in_directory(target_dir, &all_scanned_paths);
+        // Reconcile and prune files that were deleted from disk only if scan was recursive and completed without fatal error
+        if total_failed == 0 {
+            if recursive {
+                if let Ok(mut db) = db_mutex.lock() {
+                    let _ = db.prune_missing_files_in_directory(target_dir, &all_scanned_paths);
+                    let _ = db.record_directory_scanned(target_dir, total_indexed);
+                }
+            } else if let Ok(mut db) = db_mutex.lock() {
                 let _ = db.record_directory_scanned(target_dir, total_indexed);
             }
-        } else if let Ok(mut db) = db_mutex.lock() {
-            let _ = db.record_directory_scanned(target_dir, total_indexed);
         }
 
         // Finalize status
         let elapsed = start_time.elapsed().as_millis() as u64;
         if let Ok(mut status) = status_mutex.lock() {
-            status.state = "completed".to_string();
+            if total_failed > 0 {
+                status.state = "error".to_string();
+                status.message = Some(format!(
+                    "扫描完成但有写入错误：已索引 {} 个，失败 {} 个。错误：{}",
+                    total_indexed,
+                    total_failed,
+                    last_error_msg.unwrap_or_default()
+                ));
+            } else {
+                status.state = "completed".to_string();
+                status.message = Some(format!(
+                    "索引构建完成：已索引 {} 个文件，耗时 {} ms",
+                    total_indexed, elapsed
+                ));
+            }
             status.files_discovered = total_discovered;
             status.files_indexed = total_indexed;
             status.files_skipped = total_skipped;
+            status.files_failed = total_failed;
             status.elapsed_ms = elapsed;
-            status.message = Some(format!(
-                "索引构建完成：已索引 {} 个文件，耗时 {} ms",
-                total_indexed, elapsed
-            ));
         }
 
-        Ok(total_indexed)
+        if total_failed > 0 {
+            Err(format!("部分文件未能写入索引数据库 ({} 失败)", total_failed))
+        } else {
+            Ok(total_indexed)
+        }
     }
-}
-
-fn normalize_path(p: &Path) -> String {
-    let s = p.to_string_lossy().to_string();
-    // Normalize Windows backslashes
-    s.replace('/', "\\")
 }

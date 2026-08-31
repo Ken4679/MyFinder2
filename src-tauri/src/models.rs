@@ -68,12 +68,13 @@ pub struct FileRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexingStatus {
-    pub state: String, // "idle" | "indexing" | "completed" | "cancelled" | "error"
+    pub state: String, // "idle" | "indexing" | "cancelling" | "completed" | "cancelled" | "error"
     pub current_directory: Option<String>,
     pub current_file: Option<String>,
     pub files_discovered: u64,
     pub files_indexed: u64,
     pub files_skipped: u64,
+    pub files_failed: u64,
     pub elapsed_ms: u64,
     pub message: Option<String>,
 }
@@ -87,6 +88,7 @@ impl Default for IndexingStatus {
             files_discovered: 0,
             files_indexed: 0,
             files_skipped: 0,
+            files_failed: 0,
             elapsed_ms: 0,
             message: None,
         }

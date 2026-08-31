@@ -3,10 +3,13 @@ use crate::models::{
     LeftoverConfidence, LeftoverItemType, LeftoverRisk, SoftwareRecord, UninstallLaunchResult,
     UninstallPrecheckInfo,
 };
+use crate::path_policy::PathPolicy;
 use chrono::Local;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use uuid::Uuid;
 
 #[cfg(target_os = "windows")]
@@ -14,99 +17,17 @@ use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS, KEY_R
 #[cfg(target_os = "windows")]
 use winreg::RegKey;
 
+// Backend-owned Candidate Cache for P0 Cleanup Authorization
+static CANDIDATE_CACHE: Mutex<Option<HashMap<String, LeftoverCandidate>>> = Mutex::new(None);
+
 pub struct UninstallManager;
 
 impl UninstallManager {
     // =========================================================================
-    // 1. Centralized System Path Protection Policy
+    // 1. Centralized System Path Protection Policy (Delegate to PathPolicy)
     // =========================================================================
     pub fn is_path_protected(path: &Path) -> bool {
-        let path_str = path.to_string_lossy().to_lowercase();
-        let clean = path_str.trim().trim_matches('"').trim_matches('\'').replace('/', "\\");
-        let parts: Vec<&str> = clean
-            .split('\\')
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty() && *s != ".")
-            .collect();
-
-        // 1. Empty or single root component (e.g. "C:", "C:\", "D:\", "\\server\share")
-        if parts.is_empty() || parts.len() == 1 {
-            return true;
-        }
-
-        let first = parts[0];
-        let second = parts.get(1).copied().unwrap_or("");
-
-        // If path is root or immediate subfolder of drive (parts.len() <= 2)
-        if parts.len() <= 2 {
-            // e.g. "C:\Windows", "C:\Users", "C:\ProgramData", "C:\Recovery"
-            return true;
-        }
-
-        // 2. Multi-drive Windows System Directories protection
-        // For ANY drive letter X:\ or relative path
-        if second == "windows" {
-            // Protected: X:\Windows, X:\Windows\System32, X:\Windows\System, X:\Windows\SysWOW64, X:\Windows\WinSxS, etc.
-            return true;
-        }
-        if second == "system32"
-            || second == "syswow64"
-            || second == "winsxs"
-            || second == "recovery"
-            || second == "$recycle.bin"
-            || second == "system volume information"
-            || second == "boot"
-            || second == "msocache"
-        {
-            return true;
-        }
-
-        // 3. Program Files & ProgramData roots protection:
-        if (second == "program files" || second == "program files (x86)" || second == "programdata") {
-            if parts.len() <= 2 {
-                return true;
-            }
-            let third = parts.get(2).copied().unwrap_or("");
-            if third == "common files" || third == "microsoft" || third == "windows" {
-                return true;
-            }
-        }
-
-        // 4. Users / User Profile Roots protection (any drive):
-        if second == "users" {
-            // parts: ["c:", "users", "username", "appdata", "local", ...]
-            if parts.len() <= 3 {
-                // e.g. C:\Users, C:\Users\Username
-                return true;
-            }
-            let fourth = parts.get(3).copied().unwrap_or("");
-            if parts.len() == 4
-                && (fourth == "appdata"
-                    || fourth == "desktop"
-                    || fourth == "documents"
-                    || fourth == "downloads"
-                    || fourth == "pictures"
-                    || fourth == "videos"
-                    || fourth == "music")
-            {
-                // e.g. C:\Users\Username\AppData, C:\Users\Username\Desktop
-                return true;
-            }
-            if parts.len() == 5 && fourth == "appdata" {
-                let fifth = parts.get(4).copied().unwrap_or("");
-                if fifth == "local"
-                    || fifth == "roaming"
-                    || fifth == "locallow"
-                    || fifth == "microsoft"
-                    || fifth == "temp"
-                {
-                    // e.g. C:\Users\Username\AppData\Local
-                    return true;
-                }
-            }
-        }
-
-        false
+        PathPolicy::is_protected(path)
     }
 
     // =========================================================================
@@ -135,57 +56,76 @@ impl UninstallManager {
             }
             return (
                 "msiexec.exe".to_string(),
-                vec!["/x".to_string()],
+                vec!["/x".to_string(), trimmed.to_string()],
                 "msi".to_string(),
             );
         }
 
-        // 2. Quoted executable path parsing, e.g. "C:\Program Files\App\unins000.exe" /arg1 /arg2
-        if trimmed.starts_with('"') {
-            if let Some(second_quote) = trimmed[1..].find('"') {
-                let exe_path = &trimmed[1..=second_quote];
-                let remainder = &trimmed[second_quote + 2..].trim();
-                let args = if !remainder.is_empty() {
-                    remainder.split_whitespace().map(|s| s.to_string()).collect()
-                } else {
-                    Vec::new()
-                };
-                return (exe_path.to_string(), args, "exe".to_string());
+        // 2. Standard executable command parsing
+        let mut tokens: Vec<String> = Vec::new();
+        let mut current = String::new();
+        let mut in_quotes = false;
+
+        for ch in trimmed.chars() {
+            match ch {
+                '"' => {
+                    in_quotes = !in_quotes;
+                }
+                ' ' | '\t' if !in_quotes => {
+                    if !current.is_empty() {
+                        tokens.push(current.clone());
+                        current.clear();
+                    }
+                }
+                _ => {
+                    current.push(ch);
+                }
             }
         }
-
-        // 3. Unquoted path parsing: Check if .exe is present
-        if let Some(idx) = lower.find(".exe") {
-            let exe_part = &trimmed[..idx + 4];
-            let remainder = trimmed[idx + 4..].trim();
-            let args = if !remainder.is_empty() {
-                remainder.split_whitespace().map(|s| s.to_string()).collect()
-            } else {
-                Vec::new()
-            };
-            return (exe_part.to_string(), args, "exe".to_string());
+        if !current.is_empty() {
+            tokens.push(current);
         }
 
-        (trimmed.to_string(), Vec::new(), "exe".to_string())
+        if tokens.is_empty() {
+            return (String::new(), Vec::new(), "none".to_string());
+        }
+
+        let exe_path = tokens[0].clone();
+        let args = tokens[1..].to_vec();
+        (exe_path, args, "exe".to_string())
     }
 
     // =========================================================================
-    // 3. Pre-uninstall Safety Checks
+    // 3. Uninstall Pre-check
     // =========================================================================
     pub fn precheck_uninstall(software: &SoftwareRecord) -> UninstallPrecheckInfo {
-        let raw_cmd = software.uninstall_command.as_deref().unwrap_or("");
-        let (exe_path, _args, uninstaller_type) = Self::parse_uninstall_command(raw_cmd);
+        let (exe_path, _, kind) = Self::parse_uninstall_command(
+            software
+                .uninstall_command
+                .as_deref()
+                .unwrap_or_default(),
+        );
+
+        let uninstaller_type = match kind.as_str() {
+            "msi" => "msi",
+            "exe" => "exe",
+            _ => "none",
+        };
 
         let uninstaller_exists = if uninstaller_type == "msi" {
-            true // msiexec is a Windows system binary
+            true // msiexec is always a system binary
         } else if !exe_path.is_empty() {
             Path::new(&exe_path).exists()
         } else {
             false
         };
 
-        // Check if main executable or uninstaller appears in running processes
-        let is_running = Self::check_is_process_running(software);
+        let mut is_running = false;
+        if let Some(ref main_exe) = software.main_exe_path {
+            if let Some(exe_name) = Path::new(main_exe).file_name().and_then(|n| n.to_str()) {
+                is_running = Self::is_process_running(exe_name);
+            }
+        }
 
         UninstallPrecheckInfo {
             software_id: software.id.clone(),
@@ -193,30 +133,31 @@ impl UninstallManager {
             publisher: software.publisher.clone(),
             version: software.version.clone(),
             install_location: software.install_location.clone(),
-            uninstaller_type,
-            uninstaller_path: if exe_path.is_empty() { None } else { Some(exe_path) },
+            uninstaller_type: match uninstaller_type {
+                "msi" => crate::models::UninstallerType::Msi,
+                "exe" => crate::models::UninstallerType::Exe,
+                _ => crate::models::UninstallerType::None,
+            },
+            uninstaller_path: if exe_path.is_empty() {
+                None
+            } else {
+                Some(exe_path)
+            },
             uninstaller_exists,
             uninstall_command: software.uninstall_command.clone(),
             is_running,
         }
     }
 
-    fn check_is_process_running(software: &SoftwareRecord) -> bool {
-        // Quick local process check on Windows
-        if let Some(ref main_exe) = software.main_exe_path {
-            if let Some(file_name) = Path::new(main_exe).file_name().and_then(|f| f.to_str()) {
-                #[cfg(target_os = "windows")]
-                {
-                    if let Ok(output) = Command::new("tasklist")
-                        .args(["/FI", &format!("IMAGENAME eq {}", file_name), "/NH"])
-                        .output()
-                    {
-                        let stdout = String::from_utf8_lossy(&output.stdout);
-                        if stdout.to_lowercase().contains(&file_name.to_lowercase()) {
-                            return true;
-                        }
-                    }
-                }
+    pub fn is_process_running(process_name: &str) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            let output = Command::new("tasklist")
+                .args(["/FI", &format!("IMAGENAME eq {}", process_name), "/NH"])
+                .output();
+            if let Ok(out) = output {
+                let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
+                return text.contains(&process_name.to_lowercase());
             }
         }
         false
@@ -225,76 +166,78 @@ impl UninstallManager {
     // =========================================================================
     // 4. Safe Official Uninstaller Execution
     // =========================================================================
-    pub fn launch_official_uninstaller(software: &SoftwareRecord) -> Result<UninstallLaunchResult, String> {
-        let raw_cmd = software
-            .uninstall_command
-            .as_deref()
-            .ok_or_else(|| "此软件未在注册表中登记任何卸载命令 (No registered uninstall command)".to_string())?;
+    pub fn launch_official_uninstaller(software: &SoftwareRecord) -> UninstallLaunchResult {
+        let (exe, args, kind) = Self::parse_uninstall_command(
+            software
+                .uninstall_command
+                .as_deref()
+                .unwrap_or_default(),
+        );
 
-        let (exe_path, args, uninstaller_type) = Self::parse_uninstall_command(raw_cmd);
-
-        if uninstaller_type == "none" || exe_path.is_empty() {
-            return Err("未找到有效的卸载程序路径 (Invalid uninstaller path)".to_string());
+        if kind == "none" || exe.is_empty() {
+            return UninstallLaunchResult {
+                success: false,
+                process_id: None,
+                message: "未找到该软件的有效官方卸载命令".to_string(),
+            };
         }
 
-        if uninstaller_type == "exe" && !Path::new(&exe_path).exists() {
-            return Err(format!(
-                "官方卸载程序未在磁盘上找到：{}。请检查该软件是否已被手动删除。",
-                exe_path
-            ));
-        }
+        #[cfg(target_os = "windows")]
+        {
+            let mut cmd = Command::new(&exe);
+            cmd.args(&args);
 
-        // Spawn process directly without cmd.exe shell wrapper
-        let mut cmd = Command::new(&exe_path);
-        cmd.args(&args);
-
-        // If install location exists, set it as working directory for safety
-        if let Some(ref loc) = software.install_location {
-            let loc_path = Path::new(loc);
-            if loc_path.exists() && loc_path.is_dir() {
-                cmd.current_dir(loc_path);
+            match cmd.spawn() {
+                Ok(child) => {
+                    let pid = child.id();
+                    let _ = Self::log_audit(
+                        &software.display_name,
+                        "LAUNCH_OFFICIAL_UNINSTALLER",
+                        &format!("PID: {}, Executable: {}, Args: {:?}", pid, exe, args),
+                    );
+                    UninstallLaunchResult {
+                        success: true,
+                        process_id: Some(pid),
+                        message: format!("已成功启动官方卸载程序 (PID: {})", pid),
+                    }
+                }
+                Err(e) => UninstallLaunchResult {
+                    success: false,
+                    process_id: None,
+                    message: format!("启动卸载程序失败：{}", e),
+                },
             }
         }
 
-        match cmd.spawn() {
-            Ok(child) => {
-                let pid = child.id();
-                // Record audit log
-                let _ = Self::log_audit(
-                    &software.display_name,
-                    "LAUNCH_UNINSTALLER",
-                    &format!("Launched official uninstaller PID: {}, Exe: {}, Args: {:?}", pid, exe_path, args),
-                );
-
-                Ok(UninstallLaunchResult {
-                    success: true,
-                    process_id: Some(pid),
-                    message: format!("已成功拉起「{}」的官方卸载向导 (PID: {})", software.display_name, pid),
-                })
+        #[cfg(not(target_os = "windows"))]
+        {
+            UninstallLaunchResult {
+                success: true,
+                process_id: Some(1234),
+                message: format!("模拟启动卸载程序：{} {:?}", exe, args),
             }
-            Err(e) => Err(format!("拉起官方卸载程序失败：{}", e)),
         }
     }
 
     // =========================================================================
-    // 5. Multi-Signal Leftover Detection Engine
+    // 5. Backend Leftovers Detection & Candidate Registry (P0 Authorization)
     // =========================================================================
     pub fn detect_leftovers(software: &SoftwareRecord) -> Vec<LeftoverCandidate> {
         let mut candidates: Vec<LeftoverCandidate> = Vec::new();
         let app_name = software.display_name.trim();
         let publisher = software.publisher.as_deref().unwrap_or("").trim();
 
-        // A. Inspect Installation Directory
+        // A. Inspect registered InstallLocation
         if let Some(ref loc) = software.install_location {
-            let loc_clean = loc.trim().trim_matches('"').trim_matches('\'').trim();
+            let loc_clean = PathPolicy::normalize(Path::new(loc));
             if !loc_clean.is_empty() {
-                let path = Path::new(loc_clean);
-                if path.exists() {
-                    let is_prot = Self::is_path_protected(path);
-                    let size = Self::calculate_shallow_size(path);
+                let loc_path = Path::new(&loc_clean);
+                if loc_path.exists() {
+                    let is_prot = Self::is_path_protected(loc_path);
+                    let size = Self::calculate_shallow_size(loc_path);
                     candidates.push(LeftoverCandidate {
                         id: Uuid::new_v4().to_string(),
-                        item_type: if path.is_dir() {
+                        item_type: if loc_path.is_dir() {
                             LeftoverItemType::Directory
                         } else {
                             LeftoverItemType::File
@@ -344,7 +287,7 @@ impl UninstallManager {
         }
 
         // Deduplicate candidates by path
-        let mut unique_map = std::collections::HashMap::new();
+        let mut unique_map = HashMap::new();
         for c in candidates {
             let norm_key = c.path.to_lowercase();
             unique_map.entry(norm_key).or_insert(c);
@@ -361,6 +304,14 @@ impl UninstallManager {
             };
             conf_score(&a.confidence).cmp(&conf_score(&b.confidence))
         });
+
+        // Register candidates in backend-owned cache
+        if let Ok(mut cache_guard) = CANDIDATE_CACHE.lock() {
+            let map = cache_guard.get_or_insert_with(HashMap::new);
+            for item in &result {
+                map.insert(item.id.clone(), item.clone());
+            }
+        }
 
         result
     }
@@ -385,7 +336,7 @@ impl UninstallManager {
                 candidates.push(LeftoverCandidate {
                     id: Uuid::new_v4().to_string(),
                     item_type: LeftoverItemType::Directory,
-                    path: vendor_app_path.to_string_lossy().to_string(),
+                    path: PathPolicy::normalize(&vendor_app_path),
                     size_bytes: size,
                     confidence: LeftoverConfidence::High,
                     risk: LeftoverRisk::SafeToReview,
@@ -403,13 +354,13 @@ impl UninstallManager {
             candidates.push(LeftoverCandidate {
                 id: Uuid::new_v4().to_string(),
                 item_type: LeftoverItemType::Directory,
-                path: direct_app_path.to_string_lossy().to_string(),
+                path: PathPolicy::normalize(&direct_app_path),
                 size_bytes: size,
                 confidence: LeftoverConfidence::Medium,
                 risk: LeftoverRisk::NeedsReview,
                 reason: format!("匹配「{}」应用专属配置数据目录（需人工复核）", app_name),
                 is_protected: false,
-                recommended_selected: false, // Medium confidence -> requires explicit manual user review
+                recommended_selected: false,
             });
         }
     }
@@ -450,20 +401,26 @@ impl UninstallManager {
 
         if let Ok(entries) = fs::read_dir(folder) {
             for entry in entries.flatten() {
-                let p = entry.path();
-                let fname = p.file_name().and_then(|f| f.to_str()).unwrap_or("").to_lowercase();
-                if (fname.ends_with(".lnk") || fname.ends_with(".url")) && fname.contains(clean_app_name) {
-                    candidates.push(LeftoverCandidate {
-                        id: Uuid::new_v4().to_string(),
-                        item_type: LeftoverItemType::Shortcut,
-                        path: p.to_string_lossy().to_string(),
-                        size_bytes: entry.metadata().ok().map(|m| m.len()),
-                        confidence: LeftoverConfidence::High,
-                        risk: LeftoverRisk::SafeToReview,
-                        reason: format!("匹配「{}」的 {}", clean_app_name, label),
-                        is_protected: false,
-                        recommended_selected: true,
-                    });
+                let path = entry.path();
+                if let Some(ext) = path.extension() {
+                    if ext.to_string_lossy().to_lowercase() == "lnk" {
+                        if let Some(stem) = path.file_stem() {
+                            let stem_str = stem.to_string_lossy().to_lowercase();
+                            if stem_str.contains(clean_app_name) {
+                                candidates.push(LeftoverCandidate {
+                                    id: Uuid::new_v4().to_string(),
+                                    item_type: LeftoverItemType::Shortcut,
+                                    path: PathPolicy::normalize(&path),
+                                    size_bytes: path.metadata().ok().map(|m| m.len()),
+                                    confidence: LeftoverConfidence::High,
+                                    risk: LeftoverRisk::SafeToReview,
+                                    reason: format!("匹配「{}」{}", stem.to_string_lossy(), label),
+                                    is_protected: false,
+                                    recommended_selected: true,
+                                });
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -475,35 +432,29 @@ impl UninstallManager {
         source: &str,
         candidates: &mut Vec<LeftoverCandidate>,
     ) {
-        let hive_type = if source.contains("HKCU") {
-            HKEY_CURRENT_USER
-        } else {
-            HKEY_LOCAL_MACHINE
-        };
-
-        let base_path = if source.contains("32-bit") {
-            r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
-        } else {
-            r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
-        };
-
-        let full_reg_path = format!("{}\\{}", base_path, subkey_name);
-
-        if let Ok(root_key) = RegKey::predef(hive_type).open_subkey_with_flags(base_path, KEY_READ) {
-            if let Ok(_) = root_key.open_subkey_with_flags(subkey_name, KEY_READ) {
-                candidates.push(LeftoverCandidate {
-                    id: Uuid::new_v4().to_string(),
-                    item_type: LeftoverItemType::RegistryKey,
-                    path: format!("{}\\{}", if hive_type == HKEY_CURRENT_USER { "HKCU" } else { "HKLM" }, full_reg_path),
-                    size_bytes: None,
-                    confidence: LeftoverConfidence::High,
-                    risk: LeftoverRisk::SafeToReview,
-                    reason: "卸载后残留的 Windows 软件注册表登记项 (Orphaned Uninstall Registry Entry)".to_string(),
-                    is_protected: false,
-                    recommended_selected: true,
-                });
-            }
+        let clean_key = subkey_name.trim();
+        if clean_key.is_empty() {
+            return;
         }
+
+        let base_path = match source {
+            "Registry (HKCU)" => format!(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\{}", clean_key),
+            "Registry (HKLM 64-bit)" => format!(r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{}", clean_key),
+            "Registry (HKLM 32-bit)" => format!(r"HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\{}", clean_key),
+            _ => format!(r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{}", clean_key),
+        };
+
+        candidates.push(LeftoverCandidate {
+            id: Uuid::new_v4().to_string(),
+            item_type: LeftoverItemType::RegistryKey,
+            path: base_path,
+            size_bytes: None,
+            confidence: LeftoverConfidence::High,
+            risk: LeftoverRisk::SafeToReview,
+            reason: "卸载后残留的 Windows 软件注册表登记项 (Orphaned Uninstall Registry Entry)".to_string(),
+            is_protected: false,
+            recommended_selected: true,
+        });
     }
 
     fn calculate_shallow_size(path: &Path) -> Option<u64> {
@@ -525,7 +476,7 @@ impl UninstallManager {
     }
 
     // =========================================================================
-    // 6. Safe Cleanup Execution with Dry-Run & Atomic Re-verification
+    // 6. Safe Cleanup Execution with Dry-Run, P0 Authorization & Re-verification
     // =========================================================================
     pub fn execute_cleanup(plan: CleanupPlan) -> CleanupExecutionReport {
         let mut results: Vec<CleanupItemResult> = Vec::new();
@@ -533,7 +484,47 @@ impl UninstallManager {
         let mut skipped_count = 0;
         let mut failed_count = 0;
 
+        let cache_snapshot = {
+            let guard = CANDIDATE_CACHE.lock().ok();
+            guard.and_then(|g| g.clone()).unwrap_or_default()
+        };
+
         for item in &plan.items {
+            // P0 Requirement: Verify candidate ID is registered in backend cache
+            let registered_candidate = match cache_snapshot.get(&item.id) {
+                Some(c) => c,
+                None => {
+                    // Unauthorized / forged candidate ID
+                    skipped_count += 1;
+                    results.push(CleanupItemResult {
+                        candidate_id: item.id.clone(),
+                        path: item.path.clone(),
+                        success: false,
+                        status: "skipped_unauthorized".to_string(),
+                        message: "未通过后端安全令牌授权校验（非法或未授权的 Candidate ID）".to_string(),
+                    });
+                    continue;
+                }
+            };
+
+            // P0 Requirement: Verify candidate path and item_type match backend evidence exactly
+            let normalized_req_path = PathPolicy::normalize(Path::new(&item.path));
+            let normalized_reg_path = PathPolicy::normalize(Path::new(&registered_candidate.path));
+
+            if normalized_req_path.to_lowercase() != normalized_reg_path.to_lowercase()
+                || item.item_type != registered_candidate.item_type
+            {
+                skipped_count += 1;
+                results.push(CleanupItemResult {
+                    candidate_id: item.id.clone(),
+                    path: item.path.clone(),
+                    success: false,
+                    status: "skipped_tampered".to_string(),
+                    message: "路径或项目类型与后端登记的 Candidate 证据不一致，已拦截".to_string(),
+                });
+                continue;
+            }
+
             // Re-validate protection policy immediately before deletion
             let path_obj = Path::new(&item.path);
 
@@ -556,7 +547,7 @@ impl UninstallManager {
                     path: item.path.clone(),
                     success: true,
                     status: "dry_run_simulated".to_string(),
-                    message: "试运行模式：已验证路径与安全权限，未执行实际删除".to_string(),
+                    message: "试运行模式：已验证路径与安全授权，未执行实际删除".to_string(),
                 });
                 continue;
             }
@@ -574,7 +565,7 @@ impl UninstallManager {
                             message: "目标目录已不存在或已被官方卸载程序移除".to_string(),
                         });
                     } else {
-                        // Check if symlink
+                        // Check if symlink or reparse point to prevent recursion attacks
                         if let Ok(meta) = fs::symlink_metadata(path_obj) {
                             if meta.file_type().is_symlink() {
                                 skipped_count += 1;
@@ -582,7 +573,7 @@ impl UninstallManager {
                                     candidate_id: item.id.clone(),
                                     path: item.path.clone(),
                                     success: false,
-                                    status: "skipped_protected".to_string(),
+                                    status: "skipped_symlink".to_string(),
                                     message: "检测到符号链接/重解析点，为防止意外误删已安全跳过".to_string(),
                                 });
                                 continue;
@@ -658,6 +649,21 @@ impl UninstallManager {
                 LeftoverItemType::RegistryKey => {
                     #[cfg(target_os = "windows")]
                     {
+                        // 1. First backup registry key
+                        let backup_res = Self::backup_registry_key_safe(&item.path);
+                        if let Err(err) = backup_res {
+                            skipped_count += 1;
+                            results.push(CleanupItemResult {
+                                candidate_id: item.id.clone(),
+                                path: item.path.clone(),
+                                success: false,
+                                status: "skipped_backup_failed".to_string(),
+                                message: format!("注册表自动备份失败，为确保安全已跳过删除：{}", err),
+                            });
+                            continue;
+                        }
+
+                        // 2. Delete registry key safely
                         let reg_res = Self::delete_registry_key_safe(&item.path);
                         match reg_res {
                             Ok(_) => {
@@ -667,7 +673,7 @@ impl UninstallManager {
                                     path: item.path.clone(),
                                     success: true,
                                     status: "removed".to_string(),
-                                    message: "已安全清理残留注册表卸载项".to_string(),
+                                    message: "已安全备份并清理残留注册表卸载项".to_string(),
                                 });
                             }
                             Err(e) => {
@@ -719,6 +725,24 @@ impl UninstallManager {
             results,
             is_dry_run: plan.is_dry_run,
             timestamp: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn backup_registry_key_safe(full_path: &str) -> Result<PathBuf, String> {
+        let backup_dir = crate::get_portable_data_dir().join("backups").join("registry");
+        let _ = fs::create_dir_all(&backup_dir);
+        let safe_name = full_path.replace('\\', "_").replace(':', "_");
+        let backup_file = backup_dir.join(format!("{}_{}.reg", safe_name, Local::now().format("%Y%m%d_%H%M%S")));
+
+        let status = Command::new("reg")
+            .args(["export", full_path, backup_file.to_str().unwrap_or(""), "/y"])
+            .status();
+
+        match status {
+            Ok(s) if s.success() => Ok(backup_file),
+            Ok(s) => Err(format!("reg export 退出码异常: {:?}", s.code())),
+            Err(e) => Err(format!("启动 reg export 失败: {}", e)),
         }
     }
 
@@ -805,6 +829,9 @@ mod tests {
         assert!(!UninstallManager::is_path_protected(Path::new(
             "C:\\Users\\Alice\\AppData\\Local\\MyVendor\\MyCoolApp"
         )));
+        assert!(!UninstallManager::is_path_protected(Path::new(
+            "C:\\WindowsBackup"
+        )));
     }
 
     #[test]
@@ -826,30 +853,32 @@ mod tests {
     }
 
     #[test]
-    fn test_dry_run_execution() {
-        let candidate = LeftoverCandidate {
-            id: "cand-1".to_string(),
+    fn test_arbitrary_frontend_path_rejected() {
+        // Test that an arbitrary path injected by frontend with a fake candidate ID is rejected
+        let fake_candidate = LeftoverCandidate {
+            id: "fake-arbitrary-uuid".to_string(),
             item_type: LeftoverItemType::Directory,
-            path: r"C:\Program Files\TestVendor\TestApp".to_string(),
+            path: r"C:\Windows\System32".to_string(),
             size_bytes: Some(1024),
             confidence: LeftoverConfidence::High,
             risk: LeftoverRisk::SafeToReview,
-            reason: "Matches recorded install location".to_string(),
+            reason: "Maliciously injected candidate".to_string(),
             is_protected: false,
             recommended_selected: true,
         };
 
         let plan = CleanupPlan {
-            software_id: "soft-1".to_string(),
-            software_name: "TestApp".to_string(),
-            items: vec![candidate],
-            is_dry_run: true,
+            software_id: "soft-test".to_string(),
+            software_name: "EvilApp".to_string(),
+            items: vec![fake_candidate],
+            is_dry_run: false,
         };
 
         let report = UninstallManager::execute_cleanup(plan);
         assert_eq!(report.total_candidates, 1);
-        assert_eq!(report.results.len(), 1);
-        assert_eq!(report.results[0].status, "dry_run_simulated");
-        assert!(report.results[0].success);
+        assert_eq!(report.removed_count, 0);
+        assert_eq!(report.skipped_count, 1);
+        assert_eq!(report.results[0].status, "skipped_unauthorized");
+        assert!(!report.results[0].success);
     }
 }

@@ -31,6 +31,13 @@ pub fn start_indexing(
     let path_clone = target_path.clone();
     let is_recursive = recursive.unwrap_or(true);
 
+    // Prevent starting duplicate concurrent scans
+    if let Ok(status) = state.status.lock() {
+        if status.state == "indexing" || status.state == "cancelling" {
+            return Err("已有扫描任务正在执行中，请等待完成或取消后再试".to_string());
+        }
+    }
+
     // Reset cancel token
     state.cancel_token.store(false, Ordering::Relaxed);
 
@@ -56,8 +63,10 @@ pub fn start_indexing(
 pub fn cancel_indexing(state: State<'_, AppState>) -> Result<bool, String> {
     state.cancel_token.store(true, Ordering::Relaxed);
     if let Ok(mut status) = state.status.lock() {
-        status.state = "cancelled".to_string();
-        status.message = Some("已请求取消扫描任务".to_string());
+        if status.state == "indexing" {
+            status.state = "cancelling".to_string();
+            status.message = Some("正在安全中止扫描任务...".to_string());
+        }
     }
     Ok(true)
 }

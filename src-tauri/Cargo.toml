@@ -16,7 +16,7 @@ serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled", "bundled-full"] }
 walkdir = "2"
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "v5"] }
 sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
