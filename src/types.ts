@@ -6,7 +6,8 @@ export enum FileCategory {
   Video = 4,
   Executable = 5,
   Config = 6,
-  Temp = 7
+  Temp = 7,
+  Archive = 8
 }
 
 export interface FileRecord {

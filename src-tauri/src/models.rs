@@ -10,6 +10,7 @@ pub enum FileCategory {
     Executable = 5,
     Config = 6,
     Temp = 7,
+    Archive = 8,
 }
 
 impl FileCategory {
@@ -22,6 +23,7 @@ impl FileCategory {
             5 => FileCategory::Executable,
             6 => FileCategory::Config,
             7 => FileCategory::Temp,
+            8 => FileCategory::Archive,
             _ => FileCategory::Other,
         }
     }

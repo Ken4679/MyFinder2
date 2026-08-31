@@ -298,11 +298,30 @@ impl Database {
         let limit = filter.limit.unwrap_or(200).min(500);
         let offset = filter.offset.unwrap_or(0);
 
-        let mut sql = String::from(
-            "SELECT id, path, file_name, directory, extension, size_bytes, category, created_time, updated_time, indexed_time
-             FROM files WHERE 1=1",
-        );
+        let mut sql = String::new();
         let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        if query_trimmed.is_empty() {
+            sql.push_str(
+                "SELECT id, path, file_name, directory, extension, size_bytes, category, created_time, updated_time, indexed_time, 0 as relevance
+                 FROM files WHERE 1=1"
+            );
+        } else {
+            // High-relevance scoring search: Exact filename > Prefix filename > Substring filename > Extension > Path
+            sql.push_str(
+                "SELECT id, path, file_name, directory, extension, size_bytes, category, created_time, updated_time, indexed_time,
+                 (CASE 
+                    WHEN LOWER(file_name) = LOWER(?1) THEN 100
+                    WHEN LOWER(file_name) LIKE LOWER(?1) || '%' THEN 80
+                    WHEN LOWER(file_name) LIKE '%' || LOWER(?1) || '%' THEN 60
+                    WHEN LOWER(extension) = LOWER(?1) OR LOWER(extension) = '.' || LOWER(?1) THEN 40
+                    WHEN LOWER(path) LIKE '%' || LOWER(?1) || '%' THEN 20
+                    ELSE 10
+                  END) as relevance
+                 FROM files WHERE 1=1"
+            );
+            params_vec.push(Box::new(query_trimmed.to_string()));
+        }
 
         // 1. Category Filter
         if let Some(cat) = filter.category {
@@ -320,7 +339,7 @@ impl Database {
             params_vec.push(Box::new(end.clone()));
         }
 
-        // 3. Keyword Search
+        // 3. Keyword Match Conditions
         if !query_trimmed.is_empty() {
             let keywords: Vec<&str> = query_trimmed.split_whitespace().collect();
             for kw in keywords {
@@ -340,7 +359,11 @@ impl Database {
             }
         }
 
-        sql.push_str(" ORDER BY updated_time DESC LIMIT ? OFFSET ?;");
+        if query_trimmed.is_empty() {
+            sql.push_str(" ORDER BY updated_time DESC LIMIT ? OFFSET ?;");
+        } else {
+            sql.push_str(" ORDER BY relevance DESC, updated_time DESC LIMIT ? OFFSET ?;");
+        }
         params_vec.push(Box::new(limit));
         params_vec.push(Box::new(offset));
 

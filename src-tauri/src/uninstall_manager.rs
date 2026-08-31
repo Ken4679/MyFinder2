@@ -23,58 +23,86 @@ impl UninstallManager {
     pub fn is_path_protected(path: &Path) -> bool {
         let path_str = path.to_string_lossy().to_lowercase();
         let clean = path_str.trim().trim_matches('"').trim_matches('\'').replace('/', "\\");
+        let parts: Vec<&str> = clean
+            .split('\\')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty() && *s != ".")
+            .collect();
 
-        // 1. Root of any drive (e.g. "c:\", "d:\", "c:")
-        if clean.len() <= 3 && clean.ends_with(':') || clean.len() <= 3 && clean.ends_with(":\\") {
+        // 1. Empty or single root component (e.g. "C:", "C:\", "D:\", "\\server\share")
+        if parts.is_empty() || parts.len() == 1 {
             return true;
         }
 
-        // 2. Component count check: Any path with <= 2 components is strictly protected
-        // Example: "C:\Program Files" has 2 parts -> Protected.
-        // Example: "C:\Windows" has 2 parts -> Protected.
-        // Example: "C:\Users\John" has 2 parts -> Protected.
-        let component_count = Path::new(&clean).components().count();
-        if component_count <= 2 {
+        let first = parts[0];
+        let second = parts.get(1).copied().unwrap_or("");
+
+        // If path is root or immediate subfolder of drive (parts.len() <= 2)
+        if parts.len() <= 2 {
+            // e.g. "C:\Windows", "C:\Users", "C:\ProgramData", "C:\Recovery"
             return true;
         }
 
-        // 3. Protected Windows system paths
-        let protected_prefixes = [
-            "c:\\windows",
-            "c:\\windows\\system32",
-            "c:\\windows\\syswow64",
-            "c:\\windows\\winsxs",
-            "c:\\windows\\system",
-            "c:\\program files",
-            "c:\\program files (x86)",
-            "c:\\programdata",
-            "c:\\users",
-            "c:\\recovery",
-            "c:\\system volume information",
-            "c:\\$recycle.bin",
-            "c:\\boot",
-            "c:\\msocache",
-        ];
+        // 2. Multi-drive Windows System Directories protection
+        // For ANY drive letter X:\ or relative path
+        if second == "windows" {
+            // Protected: X:\Windows, X:\Windows\System32, X:\Windows\System, X:\Windows\SysWOW64, X:\Windows\WinSxS, etc.
+            return true;
+        }
+        if second == "system32"
+            || second == "syswow64"
+            || second == "winsxs"
+            || second == "recovery"
+            || second == "$recycle.bin"
+            || second == "system volume information"
+            || second == "boot"
+            || second == "msocache"
+        {
+            return true;
+        }
 
-        for &prefix in &protected_prefixes {
-            if clean == prefix {
+        // 3. Program Files & ProgramData roots protection:
+        if (second == "program files" || second == "program files (x86)" || second == "programdata") {
+            if parts.len() <= 2 {
+                return true;
+            }
+            let third = parts.get(2).copied().unwrap_or("");
+            if third == "common files" || third == "microsoft" || third == "windows" {
                 return true;
             }
         }
 
-        // 4. User profile roots and generic AppData roots
-        // e.g. "c:\users\username" or "c:\users\username\appdata" or "c:\users\username\appdata\local"
-        if clean.starts_with("c:\\users\\") {
-            let parts: Vec<&str> = clean.split('\\').filter(|p| !p.is_empty()).collect();
-            // parts[0] = "c:", parts[1] = "users", parts[2] = "username"
+        // 4. Users / User Profile Roots protection (any drive):
+        if second == "users" {
+            // parts: ["c:", "users", "username", "appdata", "local", ...]
             if parts.len() <= 3 {
-                return true; // e.g. C:\Users\Username
+                // e.g. C:\Users, C:\Users\Username
+                return true;
             }
-            if parts.len() == 4 && (parts[3] == "appdata" || parts[3] == "desktop" || parts[3] == "documents" || parts[3] == "downloads") {
-                return true; // e.g. C:\Users\Username\AppData
+            let fourth = parts.get(3).copied().unwrap_or("");
+            if parts.len() == 4
+                && (fourth == "appdata"
+                    || fourth == "desktop"
+                    || fourth == "documents"
+                    || fourth == "downloads"
+                    || fourth == "pictures"
+                    || fourth == "videos"
+                    || fourth == "music")
+            {
+                // e.g. C:\Users\Username\AppData, C:\Users\Username\Desktop
+                return true;
             }
-            if parts.len() == 5 && parts[3] == "appdata" && (parts[4] == "local" || parts[4] == "roaming" || parts[4] == "locallow") {
-                return true; // e.g. C:\Users\Username\AppData\Local
+            if parts.len() == 5 && fourth == "appdata" {
+                let fifth = parts.get(4).copied().unwrap_or("");
+                if fifth == "local"
+                    || fifth == "roaming"
+                    || fifth == "locallow"
+                    || fifth == "microsoft"
+                    || fifth == "temp"
+                {
+                    // e.g. C:\Users\Username\AppData\Local
+                    return true;
+                }
             }
         }
 
@@ -734,7 +762,7 @@ impl UninstallManager {
             details: details.to_string(),
         };
 
-        let log_dir = Path::new(".myfinder").join("logs");
+        let log_dir = crate::get_portable_data_dir().join("logs");
         let _ = fs::create_dir_all(&log_dir);
         let log_file = log_dir.join("uninstall_audit.jsonl");
 

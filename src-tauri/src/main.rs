@@ -18,11 +18,10 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
-fn get_portable_data_dir() -> PathBuf {
+pub fn get_portable_data_dir() -> PathBuf {
     if let Ok(exe_path) = env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             let candidate = exe_dir.join("data");
-            // If running in target/debug or target/release, fallback to project root data or exe_dir/data
             let _ = fs::create_dir_all(&candidate);
             return candidate;
         }

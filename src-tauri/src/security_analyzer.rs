@@ -169,34 +169,15 @@ impl SecurityAnalyzer {
             }
         }
 
-        // Deterministic fallback / non-windows test preview
-        let path_str = file_path.to_string_lossy().to_lowercase();
-        if path_str.contains("microsoft") || path_str.contains("system32") {
+        // If Windows PowerShell verification was not available (e.g. non-Windows build, or execution disabled)
+        if matches!(ext.as_str(), "exe" | "dll" | "sys" | "msi" | "ps1") {
             DigitalSignatureInfo {
-                status: SignatureStatus::ValidSignature,
-                signer: Some("CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US".to_string()),
-                issuer: Some("CN=Microsoft Root Certificate Authority 2010, O=Microsoft Corporation".to_string()),
-                subject: Some("CN=Microsoft Windows".to_string()),
-                is_os_component: true,
-                verification_message: "数字签名有效 (Microsoft 操作系统受信任组件)".to_string(),
-            }
-        } else if path_str.ends_with(".exe") && (path_str.contains("program files") || path_str.contains("google")) {
-            DigitalSignatureInfo {
-                status: SignatureStatus::ValidSignature,
-                signer: Some("CN=Google LLC, O=Google LLC, L=Mountain View, S=California, C=US".to_string()),
-                issuer: Some("CN=DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1".to_string()),
-                subject: Some("CN=Google LLC".to_string()),
-                is_os_component: false,
-                verification_message: "数字签名有效 (已验证企业发布商证书)".to_string(),
-            }
-        } else if matches!(ext.as_str(), "exe" | "dll" | "sys") {
-            DigitalSignatureInfo {
-                status: SignatureStatus::Unsigned,
+                status: SignatureStatus::Unknown,
                 signer: None,
                 issuer: None,
                 subject: None,
                 is_os_component: false,
-                verification_message: "未检测到 Authenticode 数字证书或签名不可用".to_string(),
+                verification_message: "当前系统未执行 Authenticode 签名核验或验证服务不可用 (Unknown)".to_string(),
             }
         } else {
             DigitalSignatureInfo {
@@ -205,7 +186,7 @@ impl SecurityAnalyzer {
                 issuer: None,
                 subject: None,
                 is_os_component: false,
-                verification_message: "常规文件类型，无独立执行签名需求".to_string(),
+                verification_message: "常规文件类型，无独立可执行数字签名".to_string(),
             }
         }
     }

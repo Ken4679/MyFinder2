@@ -139,8 +139,10 @@ impl Scanner {
 
             let indexed_time = Utc::now().to_rfc3339();
 
+            let stable_id = Uuid::new_v5(&Uuid::NAMESPACE_URL, full_path_str.as_bytes()).to_string();
+
             let record = FileRecord {
-                id: Uuid::new_v4().to_string(),
+                id: stable_id,
                 path: full_path_str.clone(),
                 file_name,
                 directory,
@@ -181,9 +183,13 @@ impl Scanner {
             batch.clear();
         }
 
-        // Reconcile and prune files that were deleted from disk in this directory
-        if let Ok(mut db) = db_mutex.lock() {
-            let _ = db.prune_missing_files_in_directory(target_dir, &all_scanned_paths);
+        // Reconcile and prune files that were deleted from disk only if scan was recursive and completed normally
+        if recursive {
+            if let Ok(mut db) = db_mutex.lock() {
+                let _ = db.prune_missing_files_in_directory(target_dir, &all_scanned_paths);
+                let _ = db.record_directory_scanned(target_dir, total_indexed);
+            }
+        } else if let Ok(mut db) = db_mutex.lock() {
             let _ = db.record_directory_scanned(target_dir, total_indexed);
         }
 

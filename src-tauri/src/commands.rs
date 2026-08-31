@@ -239,7 +239,7 @@ pub fn execute_software_cleanup(plan: CleanupPlan) -> Result<CleanupExecutionRep
 
 #[tauri::command]
 pub fn read_uninstall_audit_logs() -> Result<Vec<AuditLogEntry>, String> {
-    let log_file = Path::new(".myfinder").join("logs").join("uninstall_audit.jsonl");
+    let log_file = crate::get_portable_data_dir().join("logs").join("uninstall_audit.jsonl");
     if !log_file.exists() {
         return Ok(Vec::new());
     }
