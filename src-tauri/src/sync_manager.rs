@@ -521,7 +521,7 @@ impl SyncManager {
         }
 
         let mut total_creates = 0u64;
-        let mut total_updates = 0u64;
+        let total_updates = 0u64;
         let mut total_deletes = 0u64;
 
         for dir in &target_dirs {
@@ -646,7 +646,7 @@ impl SyncManager {
             Arc::new(Mutex::new(HashMap::new()));
 
         #[cfg(windows)]
-        let shutdown_event_handle = {
+        let shutdown_event_usize: usize = {
             let raw_event = unsafe {
                 crate::usn_journal::winapi_compat::CreateEventW(
                     std::ptr::null_mut(),
@@ -655,8 +655,9 @@ impl SyncManager {
                     std::ptr::null(),
                 )
             };
-            *self.shutdown_event.lock().unwrap() = Some(raw_event as usize);
-            raw_event
+            let handle_usize = raw_event as usize;
+            *self.shutdown_event.lock().unwrap() = Some(handle_usize);
+            handle_usize
         };
 
         // Start Debounce Processor Thread
@@ -689,7 +690,7 @@ impl SyncManager {
                         db_arc,
                         is_watching,
                         pending_queue,
-                        shutdown_event_handle,
+                        shutdown_event_usize,
                         sync_mgr,
                     );
                 }
@@ -784,7 +785,6 @@ fn run_debounce_processor(
             continue;
         }
 
-        let mut creates = Vec::new();
         let mut updates = Vec::new();
         let mut deletes = Vec::new();
 
@@ -843,9 +843,10 @@ fn run_debounce_processor(
             }
         }
 
-        if !creates.is_empty() || !updates.is_empty() || !deletes.is_empty() {
+        if !updates.is_empty() || !deletes.is_empty() {
             if let Ok(mut db) = db_arc.lock() {
-                if let Ok((c, u, d)) = db.incremental_apply_batch(&creates, &updates, &deletes) {
+                let empty_creates: Vec<FileRecord> = Vec::new();
+                if let Ok((c, u, d)) = db.incremental_apply_batch(&empty_creates, &updates, &deletes) {
                     let total = (c + u + d) as u64;
                     changes_counter.fetch_add(total, Ordering::Relaxed);
                     *last_sync.lock().unwrap() = Utc::now().to_rfc3339();
@@ -860,7 +861,7 @@ fn run_windows_multi_root_watcher(
     db_arc: Arc<Mutex<Database>>,
     is_watching: Arc<AtomicBool>,
     pending_queue: Arc<Mutex<HashMap<String, PendingChangeItem>>>,
-    shutdown_event: *mut std::ffi::c_void,
+    shutdown_event_usize: usize,
     sync_mgr: SyncManager,
 ) {
     let mut spawned_roots: HashMap<String, ()> = HashMap::new();
@@ -882,7 +883,6 @@ fn run_windows_multi_root_watcher(
                 let is_watching_root = Arc::clone(&is_watching);
                 let queue_root = Arc::clone(&pending_queue);
                 let sync_mgr_root = sync_mgr.clone_handle();
-                let shutdown_event_usize = shutdown_event as usize;
 
                 std::thread::Builder::new()
                     .name(format!("myfinder-root-watcher-{}", root))
@@ -891,7 +891,7 @@ fn run_windows_multi_root_watcher(
                             root_clone,
                             is_watching_root,
                             queue_root,
-                            shutdown_event_usize as *mut std::ffi::c_void,
+                            shutdown_event_usize,
                             sync_mgr_root,
                         );
                     })
@@ -908,13 +908,15 @@ fn watch_single_root_overlapped(
     root_dir: String,
     is_watching: Arc<AtomicBool>,
     queue: Arc<Mutex<HashMap<String, PendingChangeItem>>>,
-    shutdown_event: *mut std::ffi::c_void,
+    shutdown_event_usize: usize,
     sync_mgr: SyncManager,
 ) {
     use crate::usn_journal::winapi_compat::*;
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
+
+    let shutdown_event = shutdown_event_usize as *mut std::ffi::c_void;
 
     let path_wide: Vec<u16> = OsStr::new(&root_dir)
         .encode_wide()
