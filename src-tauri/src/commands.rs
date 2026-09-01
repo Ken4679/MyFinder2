@@ -2,7 +2,7 @@ use crate::db::Database;
 use crate::models::{
     AuditLogEntry, FileRecord, HashResult, IncrementalSyncResult, IndexStats, IndexingStatus,
     LeftoverCandidate, SearchFilter, SecurityAssessment, SoftwareRecord, SyncStatusInfo,
-    UninstallPrecheckInfo, VolumeUsnState,
+    UninstallPrecheckInfo,
 };
 use crate::scanner::Scanner;
 use crate::security_analyzer::SecurityAnalyzer;

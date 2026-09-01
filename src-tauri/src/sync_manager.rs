@@ -1,11 +1,9 @@
 use crate::db::Database;
 use crate::models::{
-    FileRecord, IncrementalSyncResult, SyncStatusInfo, VolumeUsnState,
+    FileCategory, FileRecord, IncrementalSyncResult, SyncStatusInfo, VolumeUsnState,
 };
-use crate::scanner::Scanner;
 use crate::usn_journal::{UsnJournal, UsnSyncCheckResult};
 use chrono::Utc;
-use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -181,7 +179,7 @@ impl SyncManager {
                                             .extension()
                                             .map(|e| format!(".{}", e.to_string_lossy()))
                                             .unwrap_or_default();
-                                        let category = Scanner::detect_category(&ext);
+                                        let category = FileCategory::from_extension(&ext) as u8;
                                         let directory = p.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
 
                                         let rec_model = FileRecord {
@@ -351,7 +349,7 @@ impl SyncManager {
                             .extension()
                             .map(|e| format!(".{}", e.to_string_lossy()))
                             .unwrap_or_default();
-                        let category = Scanner::detect_category(&ext);
+                        let category = FileCategory::from_extension(&ext) as u8;
                         let directory = p.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
 
                         disk_records.push(FileRecord {
@@ -420,10 +418,10 @@ impl SyncManager {
             return; // already watching
         }
 
-        let db_arc = Arc::clone(&self.db);
+        let _db_arc = Arc::clone(&self.db);
         let is_watching = Arc::clone(&self.is_watching);
-        let changes_counter = Arc::clone(&self.total_changes_processed);
-        let last_sync = Arc::clone(&self.last_sync_time);
+        let _changes_counter = Arc::clone(&self.total_changes_processed);
+        let _last_sync = Arc::clone(&self.last_sync_time);
 
         std::thread::spawn(move || {
             while is_watching.load(Ordering::Relaxed) {

@@ -1,5 +1,4 @@
 use crate::models::VolumeUsnState;
-use chrono::Utc;
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -311,7 +310,6 @@ impl UsnJournal {
         let mut buffer = vec![0u8; 64 * 1024];
         let mut bytes_returned = 0u32;
         let mut records = Vec::new();
-        let mut current_next_usn = start_usn;
 
         let ok = unsafe {
             winapi_compat::DeviceIoControl(
@@ -336,7 +334,7 @@ impl UsnJournal {
 
         // First 8 bytes in output is the next USN to read from
         let next_usn_val = i64::from_le_bytes(buffer[0..8].try_into().unwrap_or([0; 8]));
-        current_next_usn = next_usn_val;
+        let current_next_usn = next_usn_val;
 
         let mut offset = 8usize;
         while offset + std::mem::size_of::<winapi_compat::UsnRecordHeader>() <= bytes_returned as usize {
