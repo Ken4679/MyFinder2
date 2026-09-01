@@ -2,7 +2,11 @@ use crate::models::VolumeUsnState;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-// Official Windows USN Reason Code Constants
+// Standard NTFS File Reference Number for Root Directory ($Root / .)
+pub const NTFS_ROOT_DIR_FRN: u64 = 5;
+pub const NTFS_ROOT_DIR_FULL_FRN: u64 = 0x0001000000000005;
+
+// USN Reason Codes (Win32 API Specification Standard)
 pub const USN_REASON_DATA_OVERWRITE: u32 = 0x00000001;
 pub const USN_REASON_DATA_EXTEND: u32 = 0x00000002;
 pub const USN_REASON_DATA_TRUNCATION: u32 = 0x00000004;
@@ -13,13 +17,15 @@ pub const USN_REASON_RENAME_NEW_NAME: u32 = 0x00002000;
 pub const USN_REASON_BASIC_INFO_CHANGE: u32 = 0x00008000;
 pub const USN_REASON_CLOSE: u32 = 0x80000000;
 
-// Standard NTFS Root Directory FRN index
-pub const NTFS_ROOT_DIR_FRN: u64 = 5;
-pub const NTFS_ROOT_DIR_FULL_FRN: u64 = 0x0005000000000005;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UsnSyncCheckResult {
-    /// Journal is valid and we can read changes between start_usn and next_usn
+    AlreadyUpToDate {
+        volume_path: String,
+        volume_serial: String,
+        file_system: String,
+        journal_id: u64,
+        current_usn: i64,
+    },
     CanPerformIncremental {
         volume_path: String,
         volume_serial: String,
@@ -29,15 +35,6 @@ pub enum UsnSyncCheckResult {
         next_usn: i64,
         lowest_valid_usn: i64,
     },
-    /// Volume is already 100% up to date with latest USN
-    AlreadyUpToDate {
-        volume_path: String,
-        volume_serial: String,
-        file_system: String,
-        journal_id: u64,
-        current_usn: i64,
-    },
-    /// Journal has been reset, ID changed, or records were wrapped/pruned
     NeedsReconciliation {
         volume_path: String,
         volume_serial: String,
@@ -46,14 +43,12 @@ pub enum UsnSyncCheckResult {
         current_usn: i64,
         reason: String,
     },
-    /// File system does not support USN Change Journal (e.g. FAT32, exFAT, ReFS, network share)
     UnsupportedFileSystem {
         volume_path: String,
         volume_serial: String,
         file_system: String,
         reason: String,
     },
-    /// Permission denied or failed to access volume device handle
     AccessError {
         volume_path: String,
         reason: String,
@@ -77,7 +72,7 @@ pub struct FrnNode {
     pub is_directory: bool,
 }
 
-/// FRN -> Parent FRN -> Directory hierarchy resolver for NTFS volumes
+/// FRN -> Parent FRN -> Directory hierarchy resolver for NTFS volumes using REAL NTFS FRNs.
 #[derive(Debug, Clone)]
 pub struct FrnPathResolver {
     pub volume_root: String, // e.g. "C:\"
@@ -116,7 +111,7 @@ impl FrnPathResolver {
         resolver
     }
 
-    /// Insert or update an FRN mapping entry
+    /// Insert or update an FRN mapping entry with real NTFS FRN
     pub fn insert_node(&mut self, frn: u64, parent_frn: u64, name: &str, is_dir: bool) {
         self.nodes.insert(
             frn,
@@ -141,39 +136,30 @@ impl FrnPathResolver {
             || frn == 0
     }
 
-    /// Populate hierarchy from a list of known directory paths
+    /// Populate hierarchy from existing directories using REAL Win32 NTFS FRNs (no synthetic hashes).
     pub fn populate_from_directories(&mut self, dir_paths: &[String]) {
-        for dir in dir_paths {
-            let p = Path::new(dir);
-            let mut curr_opt = p.parent();
-            while let Some(parent) = curr_opt {
-                if let Some(name) = parent.file_name() {
-                    let name_str = name.to_string_lossy().to_string();
-                    // Hash path components to synthetic stable ids if not loaded by Win32
-                    let path_str = parent.to_string_lossy().to_string();
-                    let frn = Self::path_to_synthetic_frn(&path_str);
-                    let p_frn = parent
-                        .parent()
-                        .map(|gp| Self::path_to_synthetic_frn(&gp.to_string_lossy()))
-                        .unwrap_or(NTFS_ROOT_DIR_FRN);
-                    self.insert_node(frn, p_frn, &name_str, true);
+        #[cfg(windows)]
+        {
+            for dir in dir_paths {
+                let p = Path::new(dir);
+                let mut curr = p;
+                while let Some(parent) = curr.parent() {
+                    if let Some((frn, parent_frn, name, is_dir)) = get_file_or_directory_real_frn(curr) {
+                        self.insert_node(frn, parent_frn, &name, is_dir);
+                    }
+                    curr = parent;
                 }
-                curr_opt = parent.parent();
             }
         }
-    }
-
-    fn path_to_synthetic_frn(path: &str) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        path.to_uppercase().hash(&mut hasher);
-        let h = hasher.finish();
-        // Keep in distinct synthetic range
-        0x8000000000000000 | (h & 0x7FFFFFFFFFFFFFFF)
+        #[cfg(not(windows))]
+        {
+            let _ = dir_paths;
+        }
     }
 
     /// Resolve the full directory path from the parent FRN chain.
     /// Uses `is_directory` to validate intermediate tree nodes and cycle detection.
+    /// Never invents a guessed path; returns None if unresolvable.
     pub fn resolve_dir_path(&self, frn: u64) -> Option<String> {
         if self.is_root_frn(frn) {
             return Some(self.volume_root.trim_end_matches('\\').to_string());
@@ -203,7 +189,7 @@ impl FrnPathResolver {
                 }
                 curr = node.parent_frn;
             } else {
-                // Parent FRN not found in current in-memory hierarchy tree
+                // Parent FRN not found in real FRN hierarchy tree
                 return None;
             }
         }
@@ -232,6 +218,105 @@ impl FrnPathResolver {
 
         None
     }
+}
+
+/// Query real NTFS FRN and parent real FRN for a file or directory on Windows.
+#[cfg(windows)]
+pub fn get_file_or_directory_real_frn(path: &Path) -> Option<(u64, u64, String, bool)> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+
+    let path_wide: Vec<u16> = OsStr::new(path.as_os_str())
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let handle = unsafe {
+        winapi_compat::CreateFileW(
+            path_wide.as_ptr(),
+            winapi_compat::FILE_READ_ATTRIBUTES,
+            winapi_compat::FILE_SHARE_READ
+                | winapi_compat::FILE_SHARE_WRITE
+                | winapi_compat::FILE_SHARE_DELETE,
+            ptr::null_mut(),
+            winapi_compat::OPEN_EXISTING,
+            winapi_compat::FILE_FLAG_BACKUP_SEMANTICS,
+            ptr::null_mut(),
+        )
+    };
+
+    if handle == winapi_compat::INVALID_HANDLE_VALUE {
+        return None;
+    }
+
+    let mut info = winapi_compat::BY_HANDLE_FILE_INFORMATION::default();
+    let ok = unsafe { winapi_compat::GetFileInformationByHandle(handle, &mut info) };
+    unsafe {
+        winapi_compat::CloseHandle(handle);
+    }
+
+    if ok == 0 {
+        return None;
+    }
+
+    let frn = ((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64);
+    let is_dir = (info.dwFileAttributes & 0x00000010) != 0; // FILE_ATTRIBUTE_DIRECTORY
+    let name = path.file_name()?.to_string_lossy().to_string();
+
+    let parent_frn = if let Some(parent_path) = path.parent() {
+        if parent_path.parent().is_none() {
+            NTFS_ROOT_DIR_FRN
+        } else {
+            get_directory_real_frn_only(parent_path).unwrap_or(NTFS_ROOT_DIR_FRN)
+        }
+    } else {
+        NTFS_ROOT_DIR_FRN
+    };
+
+    Some((frn, parent_frn, name, is_dir))
+}
+
+#[cfg(windows)]
+pub fn get_directory_real_frn_only(path: &Path) -> Option<u64> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+
+    let path_wide: Vec<u16> = OsStr::new(path.as_os_str())
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let handle = unsafe {
+        winapi_compat::CreateFileW(
+            path_wide.as_ptr(),
+            winapi_compat::FILE_READ_ATTRIBUTES,
+            winapi_compat::FILE_SHARE_READ
+                | winapi_compat::FILE_SHARE_WRITE
+                | winapi_compat::FILE_SHARE_DELETE,
+            ptr::null_mut(),
+            winapi_compat::OPEN_EXISTING,
+            winapi_compat::FILE_FLAG_BACKUP_SEMANTICS,
+            ptr::null_mut(),
+        )
+    };
+
+    if handle == winapi_compat::INVALID_HANDLE_VALUE {
+        return None;
+    }
+
+    let mut info = winapi_compat::BY_HANDLE_FILE_INFORMATION::default();
+    let ok = unsafe { winapi_compat::GetFileInformationByHandle(handle, &mut info) };
+    unsafe {
+        winapi_compat::CloseHandle(handle);
+    }
+
+    if ok == 0 {
+        return None;
+    }
+
+    Some(((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64))
 }
 
 pub struct UsnJournal;
@@ -364,7 +449,7 @@ impl UsnJournal {
 
     #[cfg(not(windows))]
     pub fn query_volume_usn_baseline(
-        volume: &str,
+        _volume: &str,
     ) -> Result<(u64, i64, i64, String, String), String> {
         Ok((1, 1, 0, "POSIX_VOL".to_string(), "POSIX".to_string()))
     }
@@ -500,9 +585,8 @@ impl UsnJournal {
         }
     }
 
-    /// Proper paginated reading of USN journal changes.
+    /// Paginated reading of USN journal changes using 128KB chunks.
     /// Reads chunks in a loop until all records up to target_usn/latest are gathered.
-    /// Does not stop prematurely on a single batch.
     #[cfg(windows)]
     pub fn read_usn_changes_paged(
         volume: &str,
@@ -568,7 +652,6 @@ impl UsnJournal {
             };
 
             if ok == 0 || bytes_returned < 8 {
-                // No more records or read completed
                 break;
             }
 
@@ -600,7 +683,6 @@ impl UsnJournal {
                             .collect();
                         let file_name = String::from_utf16_lossy(&u16_vec);
 
-                        // Use rec_usn for ordering & filtering validation
                         if rec_usn >= start_usn {
                             all_records.push(UsnRawRecord {
                                 file_reference_number: frn,
@@ -618,7 +700,6 @@ impl UsnJournal {
                 offset += record_len;
             }
 
-            // Pagination termination conditions
             if next_usn_val <= current_start_usn || parsed_this_chunk == 0 {
                 current_start_usn = next_usn_val;
                 break;
@@ -657,18 +738,59 @@ impl UsnJournal {
     }
 }
 
-// Windows Win32 FFI Bindings for NTFS USN Journal and Volume Management
+// Windows Win32 FFI Bindings for NTFS USN Journal, Handles, and Overlapped I/O
 #[cfg(windows)]
-mod winapi_compat {
+pub mod winapi_compat {
     pub const GENERIC_READ: u32 = 0x80000000;
+    pub const FILE_READ_ATTRIBUTES: u32 = 0x0080;
+    pub const FILE_LIST_DIRECTORY: u32 = 0x0001;
     pub const FILE_SHARE_READ: u32 = 0x00000001;
     pub const FILE_SHARE_WRITE: u32 = 0x00000002;
+    pub const FILE_SHARE_DELETE: u32 = 0x00000004;
     pub const OPEN_EXISTING: u32 = 3;
+    pub const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x02000000;
+    pub const FILE_FLAG_OVERLAPPED: u32 = 0x40000000;
     pub const INVALID_HANDLE_VALUE: *mut std::ffi::c_void = -1isize as *mut std::ffi::c_void;
 
     // FSCTL Codes
     pub const FSCTL_QUERY_USN_JOURNAL: u32 = 0x000900f4;
     pub const FSCTL_READ_USN_JOURNAL: u32 = 0x000900bb;
+
+    // Directory Notification Filters
+    pub const FILE_NOTIFY_CHANGE_FILE_NAME: u32 = 0x00000001;
+    pub const FILE_NOTIFY_CHANGE_DIR_NAME: u32 = 0x00000002;
+    pub const FILE_NOTIFY_CHANGE_SIZE: u32 = 0x00000008;
+    pub const FILE_NOTIFY_CHANGE_LAST_WRITE: u32 = 0x00000010;
+    pub const FILE_NOTIFY_CHANGE_CREATION: u32 = 0x00000040;
+
+    // Actions
+    pub const FILE_ACTION_ADDED: u32 = 0x00000001;
+    pub const FILE_ACTION_REMOVED: u32 = 0x00000002;
+    pub const FILE_ACTION_MODIFIED: u32 = 0x00000003;
+    pub const FILE_ACTION_RENAMED_OLD_NAME: u32 = 0x00000004;
+    pub const FILE_ACTION_RENAMED_NEW_NAME: u32 = 0x00000005;
+
+    // Errors & Wait codes
+    pub const ERROR_IO_PENDING: u32 = 997;
+    pub const ERROR_NOTIFY_ENUM_DIR: u32 = 1022;
+    pub const WAIT_OBJECT_0: u32 = 0;
+    pub const WAIT_TIMEOUT: u32 = 258;
+    pub const INFINITE: u32 = 0xFFFFFFFF;
+
+    #[repr(C)]
+    #[derive(Default, Debug, Clone, Copy)]
+    pub struct BY_HANDLE_FILE_INFORMATION {
+        pub dwFileAttributes: u32,
+        pub ftCreationTime: [u32; 2],
+        pub ftLastAccessTime: [u32; 2],
+        pub ftLastWriteTime: [u32; 2],
+        pub dwVolumeSerialNumber: u32,
+        pub nFileSizeHigh: u32,
+        pub nFileSizeLow: u32,
+        pub nNumberOfLinks: u32,
+        pub nFileIndexHigh: u32,
+        pub nFileIndexLow: u32,
+    }
 
     #[repr(C)]
     #[derive(Default, Debug, Clone, Copy)]
@@ -699,6 +821,28 @@ mod winapi_compat {
         pub minor_version: u16,
     }
 
+    #[repr(C)]
+    #[derive(Debug)]
+    pub struct OVERLAPPED {
+        pub internal: usize,
+        pub internal_high: usize,
+        pub offset: u32,
+        pub offset_high: u32,
+        pub h_event: *mut std::ffi::c_void,
+    }
+
+    impl Default for OVERLAPPED {
+        fn default() -> Self {
+            Self {
+                internal: 0,
+                internal_high: 0,
+                offset: 0,
+                offset_high: 0,
+                h_event: std::ptr::null_mut(),
+            }
+        }
+    }
+
     extern "system" {
         pub fn CreateFileW(
             lpFileName: *const u16,
@@ -712,6 +856,11 @@ mod winapi_compat {
 
         pub fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
 
+        pub fn GetFileInformationByHandle(
+            hFile: *mut std::ffi::c_void,
+            lpFileInformation: *mut BY_HANDLE_FILE_INFORMATION,
+        ) -> i32;
+
         pub fn DeviceIoControl(
             hDevice: *mut std::ffi::c_void,
             dwIoControlCode: u32,
@@ -721,6 +870,47 @@ mod winapi_compat {
             nOutBufferSize: u32,
             lpBytesReturned: *mut u32,
             lpOverlapped: *mut std::ffi::c_void,
+        ) -> i32;
+
+        pub fn ReadDirectoryChangesW(
+            hDirectory: *mut std::ffi::c_void,
+            lpBuffer: *mut std::ffi::c_void,
+            nBufferLength: u32,
+            bWatchSubtree: i32,
+            dwNotifyFilter: u32,
+            lpBytesReturned: *mut u32,
+            lpOverlapped: *mut OVERLAPPED,
+            lpCompletionRoutine: *mut std::ffi::c_void,
+        ) -> i32;
+
+        pub fn CreateEventW(
+            lpEventAttributes: *mut std::ffi::c_void,
+            bManualReset: i32,
+            bInitialState: i32,
+            lpName: *const u16,
+        ) -> *mut std::ffi::c_void;
+
+        pub fn SetEvent(hEvent: *mut std::ffi::c_void) -> i32;
+
+        pub fn ResetEvent(hEvent: *mut std::ffi::c_void) -> i32;
+
+        pub fn WaitForMultipleObjects(
+            nCount: u32,
+            lpHandles: *const *mut std::ffi::c_void,
+            bWaitAll: i32,
+            dwMilliseconds: u32,
+        ) -> u32;
+
+        pub fn GetOverlappedResult(
+            hFile: *mut std::ffi::c_void,
+            lpOverlapped: *mut OVERLAPPED,
+            lpNumberOfBytesTransferred: *mut u32,
+            bWait: i32,
+        ) -> i32;
+
+        pub fn CancelIoEx(
+            hFile: *mut std::ffi::c_void,
+            lpOverlapped: *mut OVERLAPPED,
         ) -> i32;
 
         pub fn GetVolumeInformationW(
@@ -743,25 +933,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_nested_directory_usn_path_resolution() {
+    fn test_nested_directory_real_frn_path_resolution() {
         let mut resolver = FrnPathResolver::new("C:");
 
-        // Setup the hierarchy:
-        // FRN 5   = C:\ (Root)
-        // FRN 100 = Projects (Parent: 5, is_dir: true)
-        // FRN 200 = App      (Parent: 100, is_dir: true)
-        // FRN 300 = test.txt (Parent: 200, is_dir: false)
-        resolver.insert_node(100, 5, "Projects", true);
-        resolver.insert_node(200, 100, "App", true);
-        resolver.insert_node(300, 200, "test.txt", false);
+        // Real FRN Hierarchy:
+        // FRN 5 (0x0001000000000005) = C:\ (Root)
+        // FRN 10020 = Projects (Parent: 5, is_dir: true)
+        // FRN 20040 = App      (Parent: 10020, is_dir: true)
+        // FRN 30060 = test.txt (Parent: 20040, is_dir: false)
+        resolver.insert_node(10020, 5, "Projects", true);
+        resolver.insert_node(20040, 10020, "App", true);
+        resolver.insert_node(30060, 20040, "test.txt", false);
 
         // 1. Resolve directory paths
         assert_eq!(resolver.resolve_dir_path(5), Some("C:".to_string()));
-        assert_eq!(resolver.resolve_dir_path(100), Some(r"C:\Projects".to_string()));
-        assert_eq!(resolver.resolve_dir_path(200), Some(r"C:\Projects\App".to_string()));
+        assert_eq!(resolver.resolve_dir_path(10020), Some(r"C:\Projects".to_string()));
+        assert_eq!(resolver.resolve_dir_path(20040), Some(r"C:\Projects\App".to_string()));
 
         // 2. Resolve file path from parent FRN + file name
-        let resolved = resolver.resolve_file_path(200, "test.txt");
+        let resolved = resolver.resolve_file_path(20040, "test.txt");
         assert_eq!(resolved, Some(r"C:\Projects\App\test.txt".to_string()));
 
         // 3. Resolve direct root file (e.g. C:\bootmgr)
@@ -794,27 +984,27 @@ mod tests {
     }
 
     #[test]
-    fn test_parent_directory_not_in_current_batch_restored() {
+    fn test_parent_directory_not_present_in_current_usn_batch() {
         let mut resolver = FrnPathResolver::new("C:");
 
-        // Existing directory tree previously indexed
-        let dirs = vec![
-            r"C:\Projects\App\Test".to_string(),
-            r"C:\Users\Admin\Documents".to_string(),
-        ];
-        resolver.populate_from_directories(&dirs);
+        // Existing directory tree previously registered with real FRNs
+        // C:\Projects (FRN: 1000) -> C:\Projects\App (FRN: 2000) -> C:\Projects\App\Test (FRN: 3000)
+        resolver.insert_node(1000, 5, "Projects", true);
+        resolver.insert_node(2000, 1000, "App", true);
+        resolver.insert_node(3000, 2000, "Test", true);
 
-        // A file in C:\Projects\App\Test arrives in USN batch without new USN records for Projects/App/Test
-        let projects_frn = FrnPathResolver::path_to_synthetic_frn(r"C:\Projects");
-        let app_frn = FrnPathResolver::path_to_synthetic_frn(r"C:\Projects\App");
-        let test_frn = FrnPathResolver::path_to_synthetic_frn(r"C:\Projects\App\Test");
+        // A new file arrives in USN batch having parent_frn=3000, with no new USN records for Projects/App/Test
+        let resolved = resolver.resolve_file_path(3000, "new_code.rs");
+        assert_eq!(resolved, Some(r"C:\Projects\App\Test\new_code.rs".to_string()));
+    }
 
-        resolver.insert_node(projects_frn, 5, "Projects", true);
-        resolver.insert_node(app_frn, projects_frn, "App", true);
-        resolver.insert_node(test_frn, app_frn, "Test", true);
+    #[test]
+    fn test_unresolvable_parent_triggers_fallback_not_guessing() {
+        let resolver = FrnPathResolver::new("C:");
 
-        let resolved = resolver.resolve_file_path(test_frn, "file.txt");
-        assert_eq!(resolved, Some(r"C:\Projects\App\Test\file.txt".to_string()));
+        // Parent FRN 8888 is unknown (not in tree and not root)
+        let resolved = resolver.resolve_file_path(8888, "unknown_parent_file.txt");
+        assert_eq!(resolved, None); // Must return None, never "C:\unknown_parent_file.txt"
     }
 
     #[test]
@@ -829,7 +1019,6 @@ mod tests {
         assert_eq!(USN_REASON_BASIC_INFO_CHANGE, 0x00008000);
         assert_eq!(USN_REASON_CLOSE, 0x80000000);
 
-        // Verify distinct bit values
         let mask = USN_REASON_FILE_CREATE | USN_REASON_RENAME_OLD_NAME | USN_REASON_RENAME_NEW_NAME | USN_REASON_FILE_DELETE;
         assert_eq!(mask & USN_REASON_FILE_CREATE, 0x00000100);
         assert_eq!(mask & USN_REASON_FILE_DELETE, 0x00000200);
@@ -854,11 +1043,10 @@ mod tests {
         // Case 1: Journal wrapped: saved.last_usn (5000) < current_lowest_usn (6000)
         let current_lowest = 6000;
         let current_next = 9000;
-
         let is_wrapped = saved_state.last_usn < current_lowest;
         assert!(is_wrapped);
 
-        // Case 2: Journal ID changed (e.g. format or journal recreate)
+        // Case 2: Journal ID changed
         let new_journal_id = 2000;
         let is_id_changed = saved_state.journal_id != new_journal_id;
         assert!(is_id_changed);
