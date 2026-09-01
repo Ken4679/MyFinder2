@@ -339,3 +339,54 @@ pub struct SecurityAssessment {
     pub assessed_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VolumeUsnState {
+    pub volume_path: String,      // e.g. "C:" or "D:"
+    pub volume_serial: String,    // Volume serial number
+    pub file_system: String,      // "NTFS" | "FAT32" | "exFAT" | "ReFS" | "unknown"
+    pub journal_id: u64,          // UsnJournalID
+    pub last_usn: i64,            // NextUsn checkpoint
+    pub lowest_valid_usn: i64,    // LowestValidUsn
+    pub last_sync_time: String,
+    pub sync_status: String,      // "synced" | "synchronizing" | "needs_rescan" | "partial" | "unsupported" | "error"
+    pub status_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStatusInfo {
+    pub overall_state: String, // "synced" | "synchronizing" | "needs_rescan" | "partial" | "error"
+    pub active_watcher_count: usize,
+    pub is_watching: bool,
+    pub last_sync_time: String,
+    pub volumes: Vec<VolumeUsnState>,
+    pub changes_processed_count: u64,
+    pub sync_method: String, // "NTFS_USN_Journal" | "Directory_Watcher" | "Reconciliation_Scan"
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IncrementalSyncResult {
+    pub success: bool,
+    pub volume_path: String,
+    pub method_used: String, // "USN_Journal" | "Reconciliation" | "Directory_Watcher"
+    pub changes_detected: u64,
+    pub creates_count: u64,
+    pub updates_count: u64,
+    pub deletes_count: u64,
+    pub elapsed_ms: u64,
+    pub new_usn: i64,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSystemChangeEvent {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub change_type: String, // "create" | "delete" | "rename" | "modify"
+    pub timestamp: String,
+}
+

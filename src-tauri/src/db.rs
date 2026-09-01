@@ -1,4 +1,4 @@
-use crate::models::{FileRecord, IndexStats, SearchFilter};
+use crate::models::{FileRecord, IndexStats, SearchFilter, VolumeUsnState};
 use chrono::Utc;
 use rusqlite::{params, Connection, Result};
 use std::fs;
@@ -92,6 +92,22 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS metadata (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );",
+            [],
+        )?;
+
+        // NTFS Volume USN Journal state tracking table
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS volume_usn_state (
+                volume_path TEXT PRIMARY KEY COLLATE NOCASE,
+                volume_serial TEXT NOT NULL,
+                file_system TEXT NOT NULL,
+                journal_id INTEGER NOT NULL,
+                last_usn INTEGER NOT NULL,
+                lowest_valid_usn INTEGER NOT NULL,
+                last_sync_time TEXT NOT NULL,
+                sync_status TEXT NOT NULL,
+                status_message TEXT
             );",
             [],
         )?;
@@ -501,6 +517,228 @@ impl Database {
         tx.commit()?;
         self.optimize()?;
         Ok(())
+    }
+
+    pub fn save_volume_usn_state(&mut self, state: &VolumeUsnState) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO volume_usn_state (volume_path, volume_serial, file_system, journal_id, last_usn, lowest_valid_usn, last_sync_time, sync_status, status_message)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(volume_path) DO UPDATE SET
+                volume_serial = excluded.volume_serial,
+                file_system = excluded.file_system,
+                journal_id = excluded.journal_id,
+                last_usn = excluded.last_usn,
+                lowest_valid_usn = excluded.lowest_valid_usn,
+                last_sync_time = excluded.last_sync_time,
+                sync_status = excluded.sync_status,
+                status_message = excluded.status_message;",
+            params![
+                state.volume_path,
+                state.volume_serial,
+                state.file_system,
+                state.journal_id as i64,
+                state.last_usn,
+                state.lowest_valid_usn,
+                state.last_sync_time,
+                state.sync_status,
+                state.status_message,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_volume_usn_state(&self, volume_path: &str) -> Result<Option<VolumeUsnState>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT volume_path, volume_serial, file_system, journal_id, last_usn, lowest_valid_usn, last_sync_time, sync_status, status_message
+             FROM volume_usn_state WHERE volume_path = ?1 COLLATE NOCASE LIMIT 1;",
+        )?;
+        let mut rows = stmt.query(params![volume_path])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(VolumeUsnState {
+                volume_path: row.get(0)?,
+                volume_serial: row.get(1)?,
+                file_system: row.get(2)?,
+                journal_id: row.get::<_, i64>(3)? as u64,
+                last_usn: row.get(4)?,
+                lowest_valid_usn: row.get(5)?,
+                last_sync_time: row.get(6)?,
+                sync_status: row.get(7)?,
+                status_message: row.get(8)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn get_all_volume_usn_states(&self) -> Result<Vec<VolumeUsnState>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT volume_path, volume_serial, file_system, journal_id, last_usn, lowest_valid_usn, last_sync_time, sync_status, status_message
+             FROM volume_usn_state ORDER BY volume_path ASC;",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(VolumeUsnState {
+                volume_path: row.get(0)?,
+                volume_serial: row.get(1)?,
+                file_system: row.get(2)?,
+                journal_id: row.get::<_, i64>(3)? as u64,
+                last_usn: row.get(4)?,
+                lowest_valid_usn: row.get(5)?,
+                last_sync_time: row.get(6)?,
+                sync_status: row.get(7)?,
+                status_message: row.get(8)?,
+            })
+        })?;
+
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    }
+
+    pub fn incremental_upsert(&mut self, record: &FileRecord) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO files (id, path, file_name, directory, extension, size_bytes, category, created_time, updated_time, indexed_time)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(path) DO UPDATE SET
+                file_name = excluded.file_name,
+                directory = excluded.directory,
+                extension = excluded.extension,
+                size_bytes = excluded.size_bytes,
+                category = excluded.category,
+                created_time = excluded.created_time,
+                updated_time = excluded.updated_time,
+                indexed_time = excluded.indexed_time;",
+            params![
+                record.id,
+                record.path,
+                record.file_name,
+                record.directory,
+                record.extension,
+                record.size_bytes,
+                record.category,
+                record.created_time,
+                record.updated_time,
+                record.indexed_time,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn incremental_delete(&mut self, file_path: &str) -> Result<usize> {
+        let deleted = self.conn.execute(
+            "DELETE FROM files WHERE path = ?1 COLLATE NOCASE;",
+            params![file_path],
+        )?;
+        Ok(deleted)
+    }
+
+    pub fn incremental_rename(&mut self, old_path: &str, new_record: &FileRecord) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM files WHERE path = ?1 COLLATE NOCASE;",
+            params![old_path],
+        )?;
+        tx.execute(
+            "INSERT INTO files (id, path, file_name, directory, extension, size_bytes, category, created_time, updated_time, indexed_time)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(path) DO UPDATE SET
+                file_name = excluded.file_name,
+                directory = excluded.directory,
+                extension = excluded.extension,
+                size_bytes = excluded.size_bytes,
+                category = excluded.category,
+                created_time = excluded.created_time,
+                updated_time = excluded.updated_time,
+                indexed_time = excluded.indexed_time;",
+            params![
+                new_record.id,
+                new_record.path,
+                new_record.file_name,
+                new_record.directory,
+                new_record.extension,
+                new_record.size_bytes,
+                new_record.category,
+                new_record.created_time,
+                new_record.updated_time,
+                new_record.indexed_time,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn incremental_apply_batch(
+        &mut self,
+        creates: &[FileRecord],
+        updates: &[FileRecord],
+        deletes: &[String],
+    ) -> Result<(usize, usize, usize)> {
+        if creates.is_empty() && updates.is_empty() && deletes.is_empty() {
+            return Ok((0, 0, 0));
+        }
+
+        let tx = self.conn.transaction()?;
+        let mut creates_count = 0;
+        let mut updates_count = 0;
+        let mut deletes_count = 0;
+
+        {
+            let mut insert_stmt = tx.prepare(
+                "INSERT INTO files (id, path, file_name, directory, extension, size_bytes, category, created_time, updated_time, indexed_time)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 ON CONFLICT(path) DO UPDATE SET
+                    file_name = excluded.file_name,
+                    directory = excluded.directory,
+                    extension = excluded.extension,
+                    size_bytes = excluded.size_bytes,
+                    category = excluded.category,
+                    created_time = excluded.created_time,
+                    updated_time = excluded.updated_time,
+                    indexed_time = excluded.indexed_time;",
+            )?;
+
+            for r in creates {
+                insert_stmt.execute(params![
+                    r.id,
+                    r.path,
+                    r.file_name,
+                    r.directory,
+                    r.extension,
+                    r.size_bytes,
+                    r.category,
+                    r.created_time,
+                    r.updated_time,
+                    r.indexed_time,
+                ])?;
+                creates_count += 1;
+            }
+
+            for r in updates {
+                insert_stmt.execute(params![
+                    r.id,
+                    r.path,
+                    r.file_name,
+                    r.directory,
+                    r.extension,
+                    r.size_bytes,
+                    r.category,
+                    r.created_time,
+                    r.updated_time,
+                    r.indexed_time,
+                ])?;
+                updates_count += 1;
+            }
+
+            let mut del_stmt = tx.prepare("DELETE FROM files WHERE path = ?1 COLLATE NOCASE;")?;
+            for path in deletes {
+                let count = del_stmt.execute(params![path])?;
+                deletes_count += count;
+            }
+        }
+
+        tx.commit()?;
+        Ok((creates_count, updates_count, deletes_count))
     }
 }
 

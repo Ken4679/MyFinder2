@@ -8,11 +8,14 @@ pub mod path_policy;
 mod scanner;
 mod security_analyzer;
 mod software_scanner;
+mod sync_manager;
 mod uninstall_manager;
+mod usn_journal;
 
 use commands::AppState;
 use db::Database;
 use models::IndexingStatus;
+use sync_manager::SyncManager;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -40,12 +43,18 @@ fn main() {
 
     // Initialize local SQLite database in portable data directory
     let db = Database::new(&data_dir).expect("Failed to initialize SQLite database");
+    let db_arc = Arc::new(Mutex::new(db));
+    let sync_manager = Arc::new(SyncManager::new(Arc::clone(&db_arc)));
 
     let app_state = AppState {
-        db: Arc::new(Mutex::new(db)),
+        db: db_arc,
         status: Arc::new(Mutex::new(IndexingStatus::default())),
         cancel_token: Arc::new(AtomicBool::new(false)),
+        sync_manager: sync_manager.clone(),
     };
+
+    // Auto-start active watcher on application open (strictly read-only)
+    sync_manager.start_active_watcher();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -71,6 +80,10 @@ fn main() {
             commands::inspect_file_security,
             commands::inspect_software_security,
             commands::calculate_file_hash,
+            commands::get_sync_status,
+            commands::trigger_incremental_sync,
+            commands::start_fs_watcher,
+            commands::stop_fs_watcher,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

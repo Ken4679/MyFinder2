@@ -2,13 +2,16 @@ import {
   AuditLogEntry,
   FileRecord,
   HashResult,
+  IncrementalSyncResult,
   IndexingStatus,
   IndexStats,
   LeftoverCandidate,
   SearchFilterParams,
   SecurityAssessment,
   SoftwareRecord,
+  SyncStatusInfo,
   UninstallPrecheckInfo,
+  VolumeUsnState,
 } from '../types';
 
 // Check if running inside native Tauri runtime environment
@@ -359,5 +362,86 @@ export const tauriBridge = {
       calculationTimeMs: 14,
       calculatedAt: new Date().toLocaleString(),
     };
+  },
+
+  async getSyncStatus(): Promise<SyncStatusInfo> {
+    if (isTauriEnvironment()) {
+      return invokeTauri<SyncStatusInfo>('get_sync_status');
+    }
+    // Web simulated sync status
+    return {
+      overallState: 'synced',
+      activeWatcherCount: 1,
+      isWatching: true,
+      lastSyncTime: new Date().toLocaleString(),
+      volumes: [
+        {
+          volumePath: 'C:',
+          volumeSerial: '8A4F102B',
+          fileSystem: 'NTFS',
+          journalId: 0x1d9f80214a,
+          lastUsn: 284910248,
+          lowestValidUsn: 1048576,
+          lastSyncTime: new Date().toLocaleString(),
+          syncStatus: 'synced',
+          statusMessage: 'NTFS USN Change Journal 保持实时极速增量同步',
+        },
+        {
+          volumePath: 'D:',
+          volumeSerial: '3C9E4211',
+          fileSystem: 'NTFS',
+          journalId: 0x0f21a008c2,
+          lastUsn: 15920194,
+          lowestValidUsn: 524288,
+          lastSyncTime: new Date().toLocaleString(),
+          syncStatus: 'synced',
+          statusMessage: '卷已对齐',
+        },
+      ],
+      changesProcessedCount: 42,
+      syncMethod: 'NTFS_USN_Journal',
+      message: 'NTFS USN 日志极速对齐完成，无需后台常驻进程',
+    };
+  },
+
+  async triggerIncrementalSync(
+    volumeOrDir?: string,
+    forceReconciliation?: boolean
+  ): Promise<IncrementalSyncResult> {
+    if (isTauriEnvironment()) {
+      return invokeTauri<IncrementalSyncResult>('trigger_incremental_sync', {
+        volumeOrDir,
+        forceReconciliation,
+      });
+    }
+    // Web simulated incremental sync
+    return {
+      success: true,
+      volumePath: volumeOrDir || 'C:',
+      methodUsed: forceReconciliation ? 'Reconciliation_Scan' : 'NTFS_USN_Journal',
+      changesDetected: 3,
+      createsCount: 2,
+      updatesCount: 1,
+      deletesCount: 0,
+      elapsedMs: 8,
+      newUsn: 284910384,
+      message: forceReconciliation
+        ? '已完成高频目录树时间戳快速核验'
+        : '通过 NTFS USN Change Journal 极速同步 3 个文件变动 (8ms)',
+    };
+  },
+
+  async startFsWatcher(): Promise<boolean> {
+    if (isTauriEnvironment()) {
+      return invokeTauri<boolean>('start_fs_watcher');
+    }
+    return true;
+  },
+
+  async stopFsWatcher(): Promise<boolean> {
+    if (isTauriEnvironment()) {
+      return invokeTauri<boolean>('stop_fs_watcher');
+    }
+    return true;
   },
 };

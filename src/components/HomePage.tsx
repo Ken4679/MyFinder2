@@ -25,7 +25,8 @@ import { formatBytes } from '../services/storageService';
 import { getFileSafetyInfo } from '../services/fileSafetyService';
 import { ContextMenu, ContextMenuAction } from './ContextMenu';
 import { SecurityAssessmentModal } from './SecurityAssessmentModal';
-import { Shield } from 'lucide-react';
+import { SyncStatusModal } from './SyncStatusModal';
+import { Shield, Zap } from 'lucide-react';
 import { tauriBridge } from '../services/tauriBridge';
 
 interface HomePageProps {
@@ -66,6 +67,7 @@ export const HomePage: React.FC<HomePageProps> = ({
     file: FileRecord;
   } | null>(null);
   const [securityInspectFile, setSecurityInspectFile] = useState<FileRecord | null>(null);
+  const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
 
   // Debounce search query input (200ms)
   useEffect(() => {
@@ -295,10 +297,15 @@ export const HomePage: React.FC<HomePageProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
-          <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 text-[11px] font-medium border border-emerald-200 dark:border-emerald-800/40">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-            <span>状态实时核验中 (0 滞后)</span>
-          </div>
+          <button
+            id="home-usn-sync-btn"
+            onClick={() => setIsSyncModalOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 text-xs font-semibold border border-emerald-200 dark:border-emerald-800/40 transition-colors cursor-pointer"
+            title="查看与管理 NTFS USN Journal 极速增量同步状态"
+          >
+            <Zap className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 fill-emerald-500/20" />
+            <span>USN 极速增量同步</span>
+          </button>
 
           <button
             id="home-refresh-btn"
@@ -615,6 +622,16 @@ export const HomePage: React.FC<HomePageProps> = ({
           onClose={() => setSecurityInspectFile(null)}
         />
       )}
+
+      {/* Sync Status & USN Journal Modal */}
+      <SyncStatusModal
+        isOpen={isSyncModalOpen}
+        onClose={() => setIsSyncModalOpen(false)}
+        onSyncCompleted={() => {
+          onRefresh();
+          showToast('NTFS USN 增量同步完成 ✅');
+        }}
+      />
     </div>
   );
 };

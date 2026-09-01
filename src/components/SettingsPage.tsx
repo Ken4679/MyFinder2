@@ -15,9 +15,12 @@ import {
   CheckCircle,
   RefreshCw,
   Sliders,
-  Info
+  Info,
+  Zap
 } from 'lucide-react';
 import { AppSettings, ElementThemeMode } from '../types';
+import { SyncStatusModal } from './SyncStatusModal';
+import { tauriBridge } from '../services/tauriBridge';
 
 interface SettingsPageProps {
   settings: AppSettings;
@@ -40,6 +43,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
 }) => {
   const [newDirPath, setNewDirPath] = useState('');
   const [isOptimizing, setIsOptimizing] = useState(false);
+  const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const showToast = (msg: string) => {
@@ -239,7 +243,40 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           </div>
         </div>
 
-        {/* 4. Local Database & Engine Maintenance */}
+        {/* 4. NTFS USN Journal & Real-time Incremental Sync */}
+        <div className="p-4 rounded-xl bg-white dark:bg-[#2b2b2b] border border-black/5 dark:border-white/5 shadow-xs space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-xs font-semibold text-[#1c1c1c] dark:text-[#f3f3f3]">
+              <Zap className="w-4 h-4 text-emerald-500" />
+              <span>NTFS USN Change Journal 极速增量同步机制</span>
+            </div>
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300">
+              Everything 级秒级对齐
+            </span>
+          </div>
+
+          <p className="text-[11px] text-neutral-500 dark:text-neutral-400 leading-relaxed">
+            软件打开期间通过 Windows 变更通知高效更新；软件关闭期间利用 NTFS 驱动内置的 USN 日志记录变化。重新启动时仅需几毫秒读取差异，<strong>永不驻留后台守护进程，零内存开销，严格只读无写入</strong>。
+          </p>
+
+          <div className="flex items-center justify-between pt-2 border-t border-black/5 dark:border-white/5">
+            <div className="text-[11px] text-neutral-500 dark:text-neutral-400 flex items-center gap-1.5">
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+              <span>纯只读免常驻架构</span>
+            </div>
+
+            <button
+              id="settings-open-usn-modal-btn"
+              onClick={() => setIsSyncModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/50 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/40 transition-colors cursor-pointer"
+            >
+              <Zap className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+              <span>查看 USN 卷状态与手动对齐</span>
+            </button>
+          </div>
+        </div>
+
+        {/* 5. Local Database & Engine Maintenance */}
         <div className="p-4 rounded-xl bg-white dark:bg-[#2b2b2b] border border-black/5 dark:border-white/5 shadow-xs space-y-3">
           <div className="flex items-center gap-2 text-xs font-semibold text-[#1c1c1c] dark:text-[#f3f3f3]">
             <Database className="w-4 h-4 text-[#0078d4]" />
@@ -354,6 +391,15 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           {toastMessage}
         </div>
       )}
+
+      {/* Sync Status & USN Journal Modal */}
+      <SyncStatusModal
+        isOpen={isSyncModalOpen}
+        onClose={() => setIsSyncModalOpen(false)}
+        onSyncCompleted={() => {
+          showToast('NTFS USN 增量同步完成 ✅');
+        }}
+      />
     </div>
   );
 };

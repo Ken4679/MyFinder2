@@ -274,4 +274,47 @@ export interface SecurityAssessment {
   assessedAt: string;
 }
 
+export interface VolumeUsnState {
+  volumePath: string;
+  volumeSerial: string;
+  fileSystem: string;
+  journalId: number;
+  lastUsn: number;
+  lowestValidUsn: number;
+  lastSyncTime: string;
+  syncStatus: 'synced' | 'synchronizing' | 'needs_rescan' | 'partial' | 'unsupported' | 'error';
+  statusMessage?: string | null;
+}
+
+export interface SyncStatusInfo {
+  overallState: 'synced' | 'synchronizing' | 'needs_rescan' | 'partial' | 'error';
+  activeWatcherCount: number;
+  isWatching: boolean;
+  lastSyncTime: string;
+  volumes: VolumeUsnState[];
+  changesProcessedCount: number;
+  syncMethod: 'NTFS_USN_Journal' | 'Directory_Watcher' | 'Reconciliation_Scan' | string;
+  message: string;
+}
+
+export interface IncrementalSyncResult {
+  success: boolean;
+  volumePath: string;
+  methodUsed: string;
+  changesDetected: number;
+  createsCount: number;
+  updatesCount: number;
+  deletesCount: number;
+  elapsedMs: number;
+  newUsn: number;
+  message: string;
+}
+
+export interface FileSystemChangeEvent {
+  path: string;
+  oldPath?: string | null;
+  changeType: 'create' | 'delete' | 'rename' | 'modify';
+  timestamp: string;
+}
+
 

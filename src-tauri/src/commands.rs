@@ -1,11 +1,13 @@
 use crate::db::Database;
 use crate::models::{
-    AuditLogEntry, FileRecord, HashResult, IndexStats, IndexingStatus, LeftoverCandidate,
-    SearchFilter, SecurityAssessment, SoftwareRecord, UninstallPrecheckInfo,
+    AuditLogEntry, FileRecord, HashResult, IncrementalSyncResult, IndexStats, IndexingStatus,
+    LeftoverCandidate, SearchFilter, SecurityAssessment, SoftwareRecord, SyncStatusInfo,
+    UninstallPrecheckInfo, VolumeUsnState,
 };
 use crate::scanner::Scanner;
 use crate::security_analyzer::SecurityAnalyzer;
 use crate::software_scanner::SoftwareScanner;
+use crate::sync_manager::SyncManager;
 use crate::uninstall_manager::UninstallManager;
 use std::fs;
 use std::path::Path;
@@ -19,6 +21,7 @@ pub struct AppState {
     pub db: Arc<Mutex<Database>>,
     pub status: Arc<Mutex<IndexingStatus>>,
     pub cancel_token: Arc<AtomicBool>,
+    pub sync_manager: Arc<SyncManager>,
 }
 
 #[tauri::command]
@@ -276,6 +279,34 @@ pub fn calculate_file_hash(file_path: String) -> Result<HashResult, String> {
         return Err(format!("文件不存在或已被移动: {}", file_path));
     }
     SecurityAnalyzer::calculate_sha256(p)
+}
+
+#[tauri::command]
+pub fn get_sync_status(state: State<'_, AppState>) -> Result<SyncStatusInfo, String> {
+    Ok(state.sync_manager.get_status())
+}
+
+#[tauri::command]
+pub fn trigger_incremental_sync(
+    volume_or_dir: Option<String>,
+    force_reconciliation: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<IncrementalSyncResult, String> {
+    let target = volume_or_dir.unwrap_or_else(|| "C:".to_string());
+    let force = force_reconciliation.unwrap_or(false);
+    state.sync_manager.synchronize_volume(&target, force)
+}
+
+#[tauri::command]
+pub fn start_fs_watcher(state: State<'_, AppState>) -> Result<bool, String> {
+    state.sync_manager.start_active_watcher();
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn stop_fs_watcher(state: State<'_, AppState>) -> Result<bool, String> {
+    state.sync_manager.stop_active_watcher();
+    Ok(true)
 }
 
 
