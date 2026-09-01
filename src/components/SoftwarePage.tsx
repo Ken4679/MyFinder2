@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   Package,
   RefreshCw,
@@ -10,20 +10,17 @@ import {
   Info,
   Calendar,
   Layers,
-  FileCode,
   Copy,
   Check,
   X,
   Database,
   Shield,
-  Trash2,
-  History
+  FileSearch,
 } from 'lucide-react';
-import { AuditLogEntry, SoftwareRecord } from '../types';
+import { SoftwareRecord } from '../types';
 import { formatBytes } from '../services/storageService';
-import { UninstallWizardModal } from './UninstallWizardModal';
+import { ResidualInspectionModal } from './UninstallWizardModal';
 import { SecurityAssessmentModal } from './SecurityAssessmentModal';
-import { tauriBridge } from '../services/tauriBridge';
 
 interface SoftwarePageProps {
   softwareList: SoftwareRecord[];
@@ -44,20 +41,13 @@ export const SoftwarePage: React.FC<SoftwarePageProps> = ({
   const [archFilter, setArchFilter] = useState<'all' | 'x64' | 'x86' | 'user'>('all');
   const [selectedSoftware, setSelectedSoftware] = useState<SoftwareRecord | null>(null);
   const [securityInspectTarget, setSecurityInspectTarget] = useState<SoftwareRecord | null>(null);
-  const [uninstallTarget, setUninstallTarget] = useState<SoftwareRecord | null>(null);
-  const [showAuditLogs, setShowAuditLogs] = useState(false);
-  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
+  const [residualInspectTarget, setResidualInspectTarget] = useState<SoftwareRecord | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 2500);
-  };
-
-  const loadAuditLogs = async () => {
-    const logs = await tauriBridge.readUninstallAuditLogs();
-    setAuditLogs(logs);
   };
 
   const copyToClipboard = (text: string, label: string) => {
@@ -113,18 +103,6 @@ export const SoftwarePage: React.FC<SoftwarePageProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
-          <button
-            id="software-audit-logs-btn"
-            onClick={async () => {
-              await loadAuditLogs();
-              setShowAuditLogs(true);
-            }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-200 transition-colors cursor-pointer"
-          >
-            <History className="w-3.5 h-3.5" />
-            <span>卸载审计日志</span>
-          </button>
-
           <button
             id="software-rescan-btn"
             disabled={isScanning}
@@ -291,11 +269,11 @@ export const SoftwarePage: React.FC<SoftwarePageProps> = ({
                       <span>元数据</span>
                     </button>
                     <button
-                      onClick={() => setUninstallTarget(soft)}
-                      className="flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors cursor-pointer"
+                      onClick={() => setResidualInspectTarget(soft)}
+                      className="flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/40 transition-colors cursor-pointer"
                     >
-                      <Trash2 className="w-3 h-3" />
-                      <span>安全卸载</span>
+                      <Layers className="w-3 h-3" />
+                      <span>残留分析</span>
                     </button>
                   </div>
 
@@ -471,12 +449,12 @@ export const SoftwarePage: React.FC<SoftwarePageProps> = ({
                   onClick={() => {
                     const target = selectedSoftware;
                     setSelectedSoftware(null);
-                    setUninstallTarget(target);
+                    setResidualInspectTarget(target);
                   }}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-900/60 transition-colors cursor-pointer border border-rose-200/60 dark:border-rose-800/60"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/60 transition-colors cursor-pointer border border-amber-200/60 dark:border-amber-800/60"
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>安全卸载向导</span>
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>残留与关联分析</span>
                 </button>
               </div>
 
@@ -491,7 +469,7 @@ export const SoftwarePage: React.FC<SoftwarePageProps> = ({
         </div>
       )}
 
-      {/* Phase 5 Security & Trust Assessment Modal for Software */}
+      {/* Security & Trust Assessment Modal for Software */}
       {securityInspectTarget && (
         <SecurityAssessmentModal
           targetPath={
@@ -504,87 +482,15 @@ export const SoftwarePage: React.FC<SoftwarePageProps> = ({
         />
       )}
 
-      {/* Phase 4 Safe Uninstall & Leftover Wizard Modal */}
-      {uninstallTarget && (
-        <UninstallWizardModal
-          software={uninstallTarget}
-          onClose={() => setUninstallTarget(null)}
+      {/* Read-Only Residual & Related Files Inspection Modal */}
+      {residualInspectTarget && (
+        <ResidualInspectionModal
+          software={residualInspectTarget}
+          onClose={() => setResidualInspectTarget(null)}
           onFinishedAndRefresh={async () => {
             await onRescan();
-            showToast('已完成卸载与清理流程，软件清单已同步刷新 ✅');
           }}
         />
-      )}
-
-      {/* Audit Logs Modal */}
-      {showAuditLogs && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="w-full max-w-2xl bg-white dark:bg-[#252525] rounded-2xl shadow-2xl border border-black/10 dark:border-white/10 overflow-hidden flex flex-col max-h-[85vh]">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-black/5 dark:border-white/5 bg-neutral-50/50 dark:bg-[#202020]/50">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg bg-blue-50 dark:bg-blue-950/60 flex items-center justify-center text-[#0078d4] dark:text-blue-400">
-                  <History className="w-4 h-4" />
-                </div>
-                <div>
-                  <h2 className="text-sm font-semibold text-[#1c1c1c] dark:text-[#f3f3f3]">
-                    卸载与清理安全审计日志
-                  </h2>
-                  <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                    本地记录于 `.myfinder/logs/uninstall_audit.jsonl`
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => setShowAuditLogs(false)}
-                className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="flex-1 p-5 overflow-y-auto space-y-2.5 text-xs">
-              {auditLogs.length === 0 ? (
-                <div className="py-12 flex flex-col items-center justify-center text-center text-neutral-400">
-                  <History className="w-8 h-8 opacity-40 mb-2" />
-                  <p className="text-xs">暂无卸载或清理审计记录</p>
-                </div>
-              ) : (
-                auditLogs.map((log) => (
-                  <div
-                    key={log.id}
-                    className="p-3 rounded-xl bg-neutral-50 dark:bg-[#1f1f1f] border border-black/5 dark:border-white/5 space-y-1"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-semibold text-neutral-800 dark:text-neutral-200">
-                        {log.softwareName}
-                      </span>
-                      <span className="font-mono text-[10px] text-neutral-400">
-                        {log.timestamp}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-blue-100 dark:bg-blue-900/40 text-[#0078d4] dark:text-blue-300">
-                        {log.action}
-                      </span>
-                      <span className="text-neutral-600 dark:text-neutral-400 text-[11px]">
-                        {log.details}
-                      </span>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div className="p-3 bg-neutral-50 dark:bg-[#202020] border-t border-black/5 dark:border-white/5 flex items-center justify-end">
-              <button
-                onClick={() => setShowAuditLogs(false)}
-                className="px-4 py-1.5 rounded-lg text-xs font-medium bg-[#0078d4] text-white hover:bg-[#006cbd] transition-colors cursor-pointer"
-              >
-                关闭
-              </button>
-            </div>
-          </div>
-        </div>
       )}
 
       {/* Toast message */}

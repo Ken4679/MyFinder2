@@ -1,7 +1,5 @@
 import {
   AuditLogEntry,
-  CleanupExecutionReport,
-  CleanupPlan,
   FileRecord,
   HashResult,
   IndexingStatus,
@@ -10,7 +8,6 @@ import {
   SearchFilterParams,
   SecurityAssessment,
   SoftwareRecord,
-  UninstallLaunchResult,
   UninstallPrecheckInfo,
 } from '../types';
 
@@ -172,18 +169,6 @@ export const tauriBridge = {
     };
   },
 
-  async launchSoftwareUninstaller(software: SoftwareRecord): Promise<UninstallLaunchResult> {
-    if (isTauriEnvironment()) {
-      return invokeTauri<UninstallLaunchResult>('launch_software_uninstaller', { software });
-    }
-    // Simulated preview response
-    return {
-      success: true,
-      processId: 8492,
-      message: `[预览模式] 已成功调起「${software.displayName}」的官方卸载向导 (PID: 8492)`,
-    };
-  },
-
   async detectSoftwareLeftovers(software: SoftwareRecord): Promise<LeftoverCandidate[]> {
     if (isTauriEnvironment()) {
       return invokeTauri<LeftoverCandidate[]>('detect_software_leftovers', { software });
@@ -252,31 +237,6 @@ export const tauriBridge = {
       });
     }
     return candidates;
-  },
-
-  async executeSoftwareCleanup(plan: CleanupPlan): Promise<CleanupExecutionReport> {
-    if (isTauriEnvironment()) {
-      return invokeTauri<CleanupExecutionReport>('execute_software_cleanup', { plan });
-    }
-    // Browser preview simulated report
-    return {
-      softwareName: plan.softwareName,
-      totalCandidates: plan.items.length,
-      removedCount: plan.isDryRun ? 0 : plan.items.length,
-      skippedCount: 0,
-      failedCount: 0,
-      results: plan.items.map((item) => ({
-        candidateId: item.id,
-        path: item.path,
-        success: true,
-        status: plan.isDryRun ? 'dry_run_simulated' : 'removed',
-        message: plan.isDryRun
-          ? '试运行模式：已验证路径与安全权限，未执行实际删除'
-          : '已安全清理残留项 (模拟预览)',
-      })),
-      isDryRun: plan.isDryRun,
-      timestamp: new Date().toLocaleString(),
-    };
   },
 
   async readUninstallAuditLogs(): Promise<AuditLogEntry[]> {

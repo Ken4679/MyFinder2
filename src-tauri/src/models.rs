@@ -195,6 +195,7 @@ pub struct UninstallPrecheckInfo {
     pub is_running: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UninstallLaunchResult {
@@ -203,6 +204,7 @@ pub struct UninstallLaunchResult {
     pub message: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CleanupPlan {
@@ -212,6 +214,7 @@ pub struct CleanupPlan {
     pub is_dry_run: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CleanupItemResult {
@@ -222,6 +225,7 @@ pub struct CleanupItemResult {
     pub message: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CleanupExecutionReport {

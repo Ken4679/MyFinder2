@@ -1,8 +1,7 @@
 use crate::db::Database;
 use crate::models::{
-    AuditLogEntry, CleanupExecutionReport, CleanupPlan, FileRecord, HashResult, IndexStats,
-    IndexingStatus, LeftoverCandidate, SearchFilter, SecurityAssessment, SoftwareRecord,
-    UninstallLaunchResult, UninstallPrecheckInfo,
+    AuditLogEntry, FileRecord, HashResult, IndexStats, IndexingStatus, LeftoverCandidate,
+    SearchFilter, SecurityAssessment, SoftwareRecord, UninstallPrecheckInfo,
 };
 use crate::scanner::Scanner;
 use crate::security_analyzer::SecurityAnalyzer;
@@ -234,18 +233,8 @@ pub fn precheck_software_uninstall(software: SoftwareRecord) -> Result<Uninstall
 }
 
 #[tauri::command]
-pub fn launch_software_uninstaller(software: SoftwareRecord) -> Result<UninstallLaunchResult, String> {
-    Ok(UninstallManager::launch_official_uninstaller(&software))
-}
-
-#[tauri::command]
 pub fn detect_software_leftovers(software: SoftwareRecord) -> Result<Vec<LeftoverCandidate>, String> {
     Ok(UninstallManager::detect_leftovers(&software))
-}
-
-#[tauri::command]
-pub fn execute_software_cleanup(plan: CleanupPlan) -> Result<CleanupExecutionReport, String> {
-    Ok(UninstallManager::execute_cleanup(plan))
 }
 
 #[tauri::command]
