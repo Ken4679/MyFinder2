@@ -53,8 +53,8 @@ fn main() {
         sync_manager: sync_manager.clone(),
     };
 
-    // Auto-start active watcher on application open (strictly read-only)
-    sync_manager.start_active_watcher();
+    // Auto-sync on startup: checks USN Journal changes since last USN and starts active watcher
+    sync_manager.perform_startup_sync();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())

@@ -215,6 +215,26 @@ impl Scanner {
             } else if let Ok(mut db) = db_mutex.lock() {
                 let _ = db.record_directory_scanned(target_dir, total_indexed);
             }
+
+            // Establish USN baseline for volume after successful initial scan
+            let volume_str = crate::usn_journal::UsnJournal::get_volume_for_path(target_dir);
+            if let Ok((journal_id, next_usn, lowest_usn, serial_str, fs_name)) =
+                crate::usn_journal::UsnJournal::query_volume_usn_baseline(&volume_str)
+            {
+                if let Ok(mut db) = db_mutex.lock() {
+                    let _ = db.save_volume_usn_state(&crate::models::VolumeUsnState {
+                        volume_path: volume_str,
+                        volume_serial: serial_str,
+                        file_system: fs_name,
+                        journal_id,
+                        last_usn: next_usn,
+                        lowest_valid_usn: lowest_usn,
+                        last_sync_time: Utc::now().to_rfc3339(),
+                        sync_status: "synced".to_string(),
+                        status_message: Some(format!("全量索引完成，锁定 USN 基线: {}", next_usn)),
+                    });
+                }
+            }
         }
 
         // Finalize status

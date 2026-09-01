@@ -668,6 +668,40 @@ impl Database {
         Ok(())
     }
 
+    pub fn rename_path(&mut self, old_path: &str, new_record: &FileRecord) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        // 1. Delete old path
+        tx.execute("DELETE FROM files WHERE path = ?1 COLLATE NOCASE;", params![old_path])?;
+        // 2. Insert new path
+        tx.execute(
+            "INSERT INTO files (id, path, file_name, directory, extension, size_bytes, category, created_time, updated_time, indexed_time)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(path) DO UPDATE SET
+                file_name = excluded.file_name,
+                directory = excluded.directory,
+                extension = excluded.extension,
+                size_bytes = excluded.size_bytes,
+                category = excluded.category,
+                created_time = excluded.created_time,
+                updated_time = excluded.updated_time,
+                indexed_time = excluded.indexed_time;",
+            params![
+                new_record.id,
+                new_record.path,
+                new_record.file_name,
+                new_record.directory,
+                new_record.extension,
+                new_record.size_bytes,
+                new_record.category,
+                new_record.created_time,
+                new_record.updated_time,
+                new_record.indexed_time,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn incremental_apply_batch(
         &mut self,
         creates: &[FileRecord],
@@ -939,5 +973,97 @@ mod tests {
             })
             .unwrap();
         assert_eq!(fts_remaining, 0);
+    }
+
+    #[test]
+    fn test_incremental_create_delete_and_rename() {
+        let mut db = create_test_db();
+
+        // 1. Create file record
+        let old_rec = FileRecord {
+            id: r"C:\A\old.txt".to_string(),
+            path: r"C:\A\old.txt".to_string(),
+            file_name: "old.txt".to_string(),
+            directory: r"C:\A".to_string(),
+            extension: ".txt".to_string(),
+            size_bytes: 1024,
+            category: 1,
+            created_time: "2024-01-01T00:00:00Z".to_string(),
+            updated_time: "2024-01-01T00:00:00Z".to_string(),
+            indexed_time: "2024-01-01T00:00:00Z".to_string(),
+        };
+
+        db.incremental_apply_batch(&[old_rec], &[], &[]).unwrap();
+        assert_eq!(db.get_stats().unwrap().total_files, 1);
+
+        // 2. Rename old.txt -> new.txt
+        let new_rec = FileRecord {
+            id: r"C:\B\new.txt".to_string(),
+            path: r"C:\B\new.txt".to_string(),
+            file_name: "new.txt".to_string(),
+            directory: r"C:\B".to_string(),
+            extension: ".txt".to_string(),
+            size_bytes: 1024,
+            category: 1,
+            created_time: "2024-01-01T00:00:00Z".to_string(),
+            updated_time: "2024-01-02T00:00:00Z".to_string(),
+            indexed_time: "2024-01-02T00:00:00Z".to_string(),
+        };
+
+        db.rename_path(r"C:\A\old.txt", &new_rec).unwrap();
+
+        // Verify C:\A\old.txt is completely gone and only C:\B\new.txt remains
+        let old_exists: i64 = db
+            .conn
+            .query_row("SELECT count(*) FROM files WHERE path = 'C:\\A\\old.txt';", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(old_exists, 0);
+
+        let new_exists: i64 = db
+            .conn
+            .query_row("SELECT count(*) FROM files WHERE path = 'C:\\B\\new.txt';", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(new_exists, 1);
+
+        // 3. Delete file
+        db.incremental_apply_batch(&[], &[], &[r"C:\B\new.txt".to_string()]).unwrap();
+        assert_eq!(db.get_stats().unwrap().total_files, 0);
+    }
+
+    #[test]
+    fn test_multiple_rapid_changes() {
+        let mut db = create_test_db();
+
+        let mut creates = Vec::new();
+        for i in 0..100 {
+            creates.push(FileRecord {
+                id: format!(r"C:\Temp\log_{}.txt", i),
+                path: format!(r"C:\Temp\log_{}.txt", i),
+                file_name: format!("log_{}.txt", i),
+                directory: r"C:\Temp".to_string(),
+                extension: ".txt".to_string(),
+                size_bytes: i * 100,
+                category: 7,
+                created_time: "2024-01-01T00:00:00Z".to_string(),
+                updated_time: "2024-01-01T00:00:00Z".to_string(),
+                indexed_time: "2024-01-01T00:00:00Z".to_string(),
+            });
+        }
+
+        // Apply 100 creations
+        let (c, u, d) = db.incremental_apply_batch(&creates, &[], &[]).unwrap();
+        assert_eq!(c, 100);
+        assert_eq!(u, 0);
+        assert_eq!(d, 0);
+        assert_eq!(db.get_stats().unwrap().total_files, 100);
+
+        // Rapid delete 50 items
+        let mut deletes = Vec::new();
+        for i in 0..50 {
+            deletes.push(format!(r"C:\Temp\log_{}.txt", i));
+        }
+        let (_, _, d_count) = db.incremental_apply_batch(&[], &[], &deletes).unwrap();
+        assert_eq!(d_count, 50);
+        assert_eq!(db.get_stats().unwrap().total_files, 50);
     }
 }

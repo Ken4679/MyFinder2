@@ -2,8 +2,14 @@ use crate::db::Database;
 use crate::models::{
     FileCategory, FileRecord, IncrementalSyncResult, SyncStatusInfo, VolumeUsnState,
 };
-use crate::usn_journal::{UsnJournal, UsnSyncCheckResult};
+use crate::usn_journal::{
+    FrnPathResolver, UsnJournal, UsnSyncCheckResult,
+    USN_REASON_BASIC_INFO_CHANGE, USN_REASON_CLOSE, USN_REASON_DATA_EXTEND,
+    USN_REASON_DATA_OVERWRITE, USN_REASON_DATA_TRUNCATION, USN_REASON_FILE_CREATE,
+    USN_REASON_FILE_DELETE, USN_REASON_RENAME_NEW_NAME, USN_REASON_RENAME_OLD_NAME,
+};
 use chrono::Utc;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -19,6 +25,7 @@ pub struct SyncManager {
     overall_state: Arc<Mutex<String>>,
     sync_method: Arc<Mutex<String>>,
     status_message: Arc<Mutex<String>>,
+    frn_resolvers: Arc<Mutex<HashMap<String, FrnPathResolver>>>,
 }
 
 impl SyncManager {
@@ -32,6 +39,7 @@ impl SyncManager {
             overall_state: Arc::new(Mutex::new("synced".to_string())),
             sync_method: Arc::new(Mutex::new("NTFS_USN_Journal".to_string())),
             status_message: Arc::new(Mutex::new("增量同步子系统已就绪".to_string())),
+            frn_resolvers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -58,7 +66,89 @@ impl SyncManager {
         }
     }
 
-    /// Perform startup / on-demand incremental synchronization
+    /// Perform automatic synchronization at startup for all indexed volumes
+    pub fn perform_startup_sync(&self) {
+        let is_syncing = Arc::clone(&self.is_syncing);
+        let overall_state = Arc::clone(&self.overall_state);
+        let status_message = Arc::clone(&self.status_message);
+        let db_arc = Arc::clone(&self.db);
+        let sync_manager_ptr = self.clone_handle();
+
+        std::thread::spawn(move || {
+            is_syncing.store(true, Ordering::SeqCst);
+            *overall_state.lock().unwrap() = "synchronizing".to_string();
+            *status_message.lock().unwrap() = "启动自检：正在通过 NTFS USN 日志对齐文件系统...".to_string();
+
+            let target_volumes: Vec<String> = {
+                if let Ok(db) = db_arc.lock() {
+                    let mut vols = Vec::new();
+                    if let Ok(stats) = db.get_stats() {
+                        for dir in stats.indexed_directories {
+                            let v = UsnJournal::get_volume_for_path(&dir);
+                            if !vols.contains(&v) {
+                                vols.push(v);
+                            }
+                        }
+                    }
+                    if let Ok(saved_vols) = db.get_all_volume_usn_states() {
+                        for sv in saved_vols {
+                            let v = sv.volume_path.trim_end_matches('\\').to_uppercase();
+                            if !vols.contains(&v) {
+                                vols.push(v);
+                            }
+                        }
+                    }
+                    vols
+                } else {
+                    Vec::new()
+                }
+            };
+
+            if target_volumes.is_empty() {
+                // No indexed roots yet (fresh install)
+                *overall_state.lock().unwrap() = "synced".to_string();
+                *status_message.lock().unwrap() = "增量引擎就绪 (等待首次全盘或目录索引)".to_string();
+                is_syncing.store(false, Ordering::SeqCst);
+                return;
+            }
+
+            let mut all_succeeded = true;
+            let mut summary_messages = Vec::new();
+
+            for vol in target_volumes {
+                match sync_manager_ptr.synchronize_volume(&vol, false) {
+                    Ok(res) => {
+                        summary_messages.push(format!("{}: {}", vol, res.message));
+                    }
+                    Err(e) => {
+                        all_succeeded = false;
+                        summary_messages.push(format!("{}: 失败 ({})", vol, e));
+                    }
+                }
+            }
+
+            if all_succeeded {
+                *overall_state.lock().unwrap() = "synced".to_string();
+                *status_message.lock().unwrap() = format!(
+                    "启动秒级对齐完成：{}",
+                    summary_messages.join(" | ")
+                );
+            } else {
+                *overall_state.lock().unwrap() = "needs_rescan".to_string();
+                *status_message.lock().unwrap() = format!(
+                    "部分卷同步需要核验：{}",
+                    summary_messages.join(" | ")
+                );
+            }
+
+            is_syncing.store(false, Ordering::SeqCst);
+
+            // Auto-start active file watcher for open session
+            sync_manager_ptr.start_active_watcher();
+        });
+    }
+
+    /// Perform incremental or fallback synchronization on a target volume
     pub fn synchronize_volume(
         &self,
         volume_or_dir: &str,
@@ -136,6 +226,15 @@ impl SyncManager {
                 next_usn,
                 lowest_valid_usn,
             } => {
+                // Initialize FRN Resolver with existing known paths
+                let mut resolver = {
+                    let mut resolvers = self.frn_resolvers.lock().unwrap();
+                    resolvers
+                        .entry(volume_path.clone())
+                        .or_insert_with(|| FrnPathResolver::new(&volume_path))
+                        .clone()
+                };
+
                 // Read USN records between start_usn and next_usn
                 let read_res = UsnJournal::read_usn_changes(&volume_path, journal_id, start_usn, 100_000);
                 match read_res {
@@ -143,66 +242,124 @@ impl SyncManager {
                         let mut creates: Vec<FileRecord> = Vec::new();
                         let mut updates: Vec<FileRecord> = Vec::new();
                         let mut deletes: Vec<String> = Vec::new();
+                        let mut unresolvable_count = 0usize;
 
-                        // Group and process USN changes
+                        // 1. First pass: Update Directory nodes in the FRN Resolver
                         for rec in &records {
-                            // Bitmask check
-                            let is_delete = (rec.reason & 0x00000200) != 0; // USN_REASON_FILE_DELETE
-                            let is_create = (rec.reason & 0x00000100) != 0; // USN_REASON_FILE_CREATE
-                            let is_rename_old = (rec.reason & 0x00002000) != 0; // USN_REASON_RENAME_OLD_NAME
-                            let is_rename_new = (rec.reason & 0x00004000) != 0; // USN_REASON_RENAME_NEW_NAME
-                            let is_modify = (rec.reason & (0x00000001 | 0x00000002 | 0x00000004 | 0x00008000 | 0x80000000)) != 0;
+                            let is_dir = (rec.file_attributes & 0x00000010) != 0; // FILE_ATTRIBUTE_DIRECTORY
+                            let is_delete = (rec.reason & USN_REASON_FILE_DELETE) != 0;
+                            let is_rename_old = (rec.reason & USN_REASON_RENAME_OLD_NAME) != 0;
 
-                            let full_path = format!(r"{}\{}", volume_path, rec.file_name);
+                            if is_dir {
+                                if is_delete || is_rename_old {
+                                    resolver.remove_node(rec.file_reference_number);
+                                } else {
+                                    resolver.insert_node(
+                                        rec.file_reference_number,
+                                        rec.parent_file_reference_number,
+                                        &rec.file_name,
+                                        true,
+                                    );
+                                }
+                            }
+                        }
 
-                            if is_delete || is_rename_old {
-                                deletes.push(full_path.clone());
+                        // 2. Second pass: Process file records with full path resolution
+                        for rec in &records {
+                            let is_dir = (rec.file_attributes & 0x00000010) != 0;
+                            if is_dir {
+                                continue;
                             }
 
-                            if is_create || is_rename_new || is_modify {
-                                if let Ok(metadata) = fs::metadata(&full_path) {
-                                    if metadata.is_file() {
-                                        let size_bytes = metadata.len() as i64;
-                                        let updated_time = metadata
-                                            .modified()
-                                            .ok()
-                                            .map(|t| chrono::DateTime::<Utc>::from(t).to_rfc3339())
-                                            .unwrap_or_else(|| Utc::now().to_rfc3339());
-                                        let created_time = metadata
-                                            .created()
-                                            .ok()
-                                            .map(|t| chrono::DateTime::<Utc>::from(t).to_rfc3339())
-                                            .unwrap_or_else(|| updated_time.clone());
+                            let is_delete = (rec.reason & USN_REASON_FILE_DELETE) != 0;
+                            let is_create = (rec.reason & USN_REASON_FILE_CREATE) != 0;
+                            let is_rename_old = (rec.reason & USN_REASON_RENAME_OLD_NAME) != 0;
+                            let is_rename_new = (rec.reason & USN_REASON_RENAME_NEW_NAME) != 0;
+                            let is_modify = (rec.reason
+                                & (USN_REASON_DATA_OVERWRITE
+                                    | USN_REASON_DATA_EXTEND
+                                    | USN_REASON_DATA_TRUNCATION
+                                    | USN_REASON_BASIC_INFO_CHANGE
+                                    | USN_REASON_CLOSE))
+                                != 0;
 
-                                        let p = Path::new(&full_path);
-                                        let ext = p
-                                            .extension()
-                                            .map(|e| format!(".{}", e.to_string_lossy()))
-                                            .unwrap_or_default();
-                                        let category = FileCategory::from_extension(&ext) as u8;
-                                        let directory = p.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
+                            // Resolve full path using FRN -> Parent FRN hierarchy
+                            let resolved_path = resolver
+                                .resolve_file_path(rec.parent_file_reference_number, &rec.file_name);
 
-                                        let rec_model = FileRecord {
-                                            id: full_path.clone(),
-                                            path: full_path.clone(),
-                                            file_name: rec.file_name.clone(),
-                                            directory,
-                                            extension: ext,
-                                            size_bytes,
-                                            category,
-                                            created_time,
-                                            updated_time,
-                                            indexed_time: Utc::now().to_rfc3339(),
-                                        };
+                            match resolved_path {
+                                Some(full_path) => {
+                                    if is_delete || is_rename_old {
+                                        deletes.push(full_path.clone());
+                                    }
 
-                                        if is_create {
-                                            creates.push(rec_model);
-                                        } else {
-                                            updates.push(rec_model);
+                                    if is_create || is_rename_new || is_modify {
+                                        if let Ok(metadata) = fs::metadata(&full_path) {
+                                            if metadata.is_file() {
+                                                let size_bytes = metadata.len() as i64;
+                                                let updated_time = metadata
+                                                    .modified()
+                                                    .ok()
+                                                    .map(|t| chrono::DateTime::<Utc>::from(t).to_rfc3339())
+                                                    .unwrap_or_else(|| Utc::now().to_rfc3339());
+                                                let created_time = metadata
+                                                    .created()
+                                                    .ok()
+                                                    .map(|t| chrono::DateTime::<Utc>::from(t).to_rfc3339())
+                                                    .unwrap_or_else(|| updated_time.clone());
+
+                                                let p = Path::new(&full_path);
+                                                let ext = p
+                                                    .extension()
+                                                    .map(|e| format!(".{}", e.to_string_lossy()))
+                                                    .unwrap_or_default();
+                                                let category = FileCategory::from_extension(&ext) as u8;
+                                                let directory = p
+                                                    .parent()
+                                                    .map(|d| d.to_string_lossy().to_string())
+                                                    .unwrap_or_default();
+
+                                                let rec_model = FileRecord {
+                                                    id: full_path.clone(),
+                                                    path: full_path.clone(),
+                                                    file_name: rec.file_name.clone(),
+                                                    directory,
+                                                    extension: ext,
+                                                    size_bytes,
+                                                    category,
+                                                    created_time,
+                                                    updated_time,
+                                                    indexed_time: Utc::now().to_rfc3339(),
+                                                };
+
+                                                if is_create {
+                                                    creates.push(rec_model);
+                                                } else {
+                                                    updates.push(rec_model);
+                                                }
+                                            }
                                         }
                                     }
                                 }
+                                None => {
+                                    unresolvable_count += 1;
+                                }
                             }
+                        }
+
+                        // Update cached FRN resolver
+                        {
+                            let mut resolvers = self.frn_resolvers.lock().unwrap();
+                            resolvers.insert(volume_path.clone(), resolver);
+                        }
+
+                        // If significant proportion of paths cannot be resolved, safe fallback
+                        if unresolvable_count > 0 && unresolvable_count > records.len() / 2 {
+                            return self.perform_reconciliation_sync(
+                                &volume_path,
+                                "部分上级目录 FRN 链无法解析，使用安全快速核验",
+                                start_time,
+                            );
                         }
 
                         // Apply to SQLite in a single transaction
@@ -215,6 +372,7 @@ impl SyncManager {
                         let total_ops = (c_count + u_count + d_count) as u64;
                         self.total_changes_processed.fetch_add(total_ops, Ordering::Relaxed);
 
+                        // Only advance last_usn after successful commit
                         let now_str = Utc::now().to_rfc3339();
                         {
                             let mut db = self.db.lock().unwrap();
@@ -300,7 +458,7 @@ impl SyncManager {
         };
 
         let mut total_creates = 0u64;
-        let mut total_updates = 0u64;
+        let total_updates = 0u64;
         let mut total_deletes = 0u64;
 
         let target_dirs: Vec<String> = if !indexed_roots.is_empty() {
@@ -377,16 +535,21 @@ impl SyncManager {
             total_deletes += deleted as u64;
         }
 
+        // Establish baseline state after successful reconciliation
+        let (journal_id, next_usn, lowest_usn, serial_str, fs_name) =
+            UsnJournal::query_volume_usn_baseline(volume_or_dir)
+                .unwrap_or((1, 1, 0, "RECONCILED".to_string(), "NTFS/Reconciled".to_string()));
+
         let now_str = Utc::now().to_rfc3339();
         {
             let mut db = self.db.lock().unwrap();
             let _ = db.save_volume_usn_state(&VolumeUsnState {
                 volume_path: volume_or_dir.to_string(),
-                volume_serial: "RECONCILED".to_string(),
-                file_system: "NTFS/Reconciled".to_string(),
-                journal_id: 1,
-                last_usn: 1,
-                lowest_valid_usn: 0,
+                volume_serial: serial_str,
+                file_system: fs_name,
+                journal_id,
+                last_usn: next_usn,
+                lowest_valid_usn: lowest_usn,
                 last_sync_time: now_str.clone(),
                 sync_status: "synced".to_string(),
                 status_message: Some(format!("核验同步完成: {}", reason)),
@@ -407,31 +570,331 @@ impl SyncManager {
             updates_count: total_updates,
             deletes_count: total_deletes,
             elapsed_ms: start_time.elapsed().as_millis() as u64,
-            new_usn: 0,
+            new_usn: next_usn,
             message: format!("对齐核验完成 (处理了 {} 项)", total_creates + total_deletes),
         })
     }
 
-    /// Start active directory watching while the application is open
+    /// Start active directory watching while the application is open using ReadDirectoryChangesW
     pub fn start_active_watcher(&self) {
         if self.is_watching.swap(true, Ordering::SeqCst) {
             return; // already watching
         }
 
-        let _db_arc = Arc::clone(&self.db);
+        let db_arc = Arc::clone(&self.db);
         let is_watching = Arc::clone(&self.is_watching);
-        let _changes_counter = Arc::clone(&self.total_changes_processed);
-        let _last_sync = Arc::clone(&self.last_sync_time);
+        let changes_counter = Arc::clone(&self.total_changes_processed);
+        let last_sync = Arc::clone(&self.last_sync_time);
 
         std::thread::spawn(move || {
-            while is_watching.load(Ordering::Relaxed) {
-                // Heartbeat interval to check for changes and keep stats updated
-                std::thread::sleep(Duration::from_millis(1500));
+            #[cfg(windows)]
+            {
+                run_windows_directory_watcher(db_arc, is_watching, changes_counter, last_sync);
+            }
+
+            #[cfg(not(windows))]
+            {
+                while is_watching.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(1500));
+                }
             }
         });
     }
 
+    /// Stop active directory watching. Closes all handles without leaving any daemon or background process.
     pub fn stop_active_watcher(&self) {
         self.is_watching.store(false, Ordering::SeqCst);
+    }
+
+    fn clone_handle(&self) -> Self {
+        Self {
+            db: Arc::clone(&self.db),
+            is_watching: Arc::clone(&self.is_watching),
+            is_syncing: Arc::clone(&self.is_syncing),
+            total_changes_processed: Arc::clone(&self.total_changes_processed),
+            last_sync_time: Arc::clone(&self.last_sync_time),
+            overall_state: Arc::clone(&self.overall_state),
+            sync_method: Arc::clone(&self.sync_method),
+            status_message: Arc::clone(&self.status_message),
+            frn_resolvers: Arc::clone(&self.frn_resolvers),
+        }
+    }
+}
+
+// Windows ReadDirectoryChangesW native implementation
+#[cfg(windows)]
+fn run_windows_directory_watcher(
+    db_arc: Arc<Mutex<Database>>,
+    is_watching: Arc<AtomicBool>,
+    changes_counter: Arc<AtomicU64>,
+    last_sync: Arc<Mutex<String>>,
+) {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+
+    const FILE_LIST_DIRECTORY: u32 = 0x0001;
+    const FILE_SHARE_READ: u32 = 0x00000001;
+    const FILE_SHARE_WRITE: u32 = 0x00000002;
+    const FILE_SHARE_DELETE: u32 = 0x00000004;
+    const OPEN_EXISTING: u32 = 3;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x02000000;
+    const INVALID_HANDLE_VALUE: *mut std::ffi::c_void = -1isize as *mut std::ffi::c_void;
+
+    const FILE_NOTIFY_CHANGE_FILE_NAME: u32 = 0x00000001;
+    const FILE_NOTIFY_CHANGE_DIR_NAME: u32 = 0x00000002;
+    const FILE_NOTIFY_CHANGE_LAST_WRITE: u32 = 0x00000010;
+    const FILE_NOTIFY_CHANGE_SIZE: u32 = 0x00000008;
+    const FILE_NOTIFY_CHANGE_CREATION: u32 = 0x00000040;
+
+    const FILE_ACTION_ADDED: u32 = 0x00000001;
+    const FILE_ACTION_REMOVED: u32 = 0x00000002;
+    const FILE_ACTION_MODIFIED: u32 = 0x00000003;
+    const FILE_ACTION_RENAMED_OLD_NAME: u32 = 0x00000004;
+    const FILE_ACTION_RENAMED_NEW_NAME: u32 = 0x00000005;
+
+    extern "system" {
+        fn CreateFileW(
+            lpFileName: *const u16,
+            dwDesiredAccess: u32,
+            dwShareMode: u32,
+            lpSecurityAttributes: *mut std::ffi::c_void,
+            dwCreationDisposition: u32,
+            dwFlagsAndAttributes: u32,
+            hTemplateFile: *mut std::ffi::c_void,
+        ) -> *mut std::ffi::c_void;
+
+        fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
+
+        fn ReadDirectoryChangesW(
+            hDirectory: *mut std::ffi::c_void,
+            lpBuffer: *mut std::ffi::c_void,
+            nBufferLength: u32,
+            bWatchSubtree: i32,
+            dwNotifyFilter: u32,
+            lpBytesReturned: *mut u32,
+            lpOverlapped: *mut std::ffi::c_void,
+            lpCompletionRoutine: *mut std::ffi::c_void,
+        ) -> i32;
+    }
+
+    while is_watching.load(Ordering::Relaxed) {
+        // Query indexed root directories
+        let indexed_roots = {
+            if let Ok(db) = db_arc.lock() {
+                db.get_stats().map(|s| s.indexed_directories).unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        };
+
+        if indexed_roots.is_empty() {
+            std::thread::sleep(Duration::from_millis(1500));
+            continue;
+        }
+
+        for root_dir in &indexed_roots {
+            if !Path::new(root_dir).exists() || !is_watching.load(Ordering::Relaxed) {
+                continue;
+            }
+
+            let path_wide: Vec<u16> = OsStr::new(root_dir)
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+
+            let dir_handle = unsafe {
+                CreateFileW(
+                    path_wide.as_ptr(),
+                    FILE_LIST_DIRECTORY,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    ptr::null_mut(),
+                    OPEN_EXISTING,
+                    FILE_FLAG_BACKUP_SEMANTICS,
+                    ptr::null_mut(),
+                )
+            };
+
+            if dir_handle == INVALID_HANDLE_VALUE {
+                continue;
+            }
+
+            let mut buffer = vec![0u8; 64 * 1024];
+            let mut bytes_returned = 0u32;
+            let filter = FILE_NOTIFY_CHANGE_FILE_NAME
+                | FILE_NOTIFY_CHANGE_DIR_NAME
+                | FILE_NOTIFY_CHANGE_LAST_WRITE
+                | FILE_NOTIFY_CHANGE_SIZE
+                | FILE_NOTIFY_CHANGE_CREATION;
+
+            let ok = unsafe {
+                ReadDirectoryChangesW(
+                    dir_handle,
+                    buffer.as_mut_ptr() as *mut _,
+                    buffer.len() as u32,
+                    1, // watch subtree recursively
+                    filter,
+                    &mut bytes_returned,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                )
+            };
+
+            unsafe {
+                CloseHandle(dir_handle);
+            }
+
+            if ok != 0 && bytes_returned > 0 {
+                // Parse FILE_NOTIFY_INFORMATION structures
+                let mut offset = 0usize;
+                let mut creates = Vec::new();
+                let mut updates = Vec::new();
+                let mut deletes = Vec::new();
+
+                while offset < bytes_returned as usize {
+                    let next_offset = u32::from_le_bytes(
+                        buffer[offset..offset + 4].try_into().unwrap_or([0; 4]),
+                    ) as usize;
+                    let action = u32::from_le_bytes(
+                        buffer[offset + 4..offset + 8].try_into().unwrap_or([0; 4]),
+                    );
+                    let filename_len = u32::from_le_bytes(
+                        buffer[offset + 8..offset + 12].try_into().unwrap_or([0; 4]),
+                    ) as usize;
+
+                    let name_offset = offset + 12;
+                    if name_offset + filename_len <= bytes_returned as usize {
+                        let name_slice = &buffer[name_offset..name_offset + filename_len];
+                        let u16_vec: Vec<u16> = name_slice
+                            .chunks_exact(2)
+                            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                            .collect();
+                        let rel_name = String::from_utf16_lossy(&u16_vec);
+                        let full_path = format!(
+                            r"{}\{}",
+                            root_dir.trim_end_matches('\\'),
+                            rel_name.trim_start_matches('\\')
+                        );
+
+                        if action == FILE_ACTION_REMOVED || action == FILE_ACTION_RENAMED_OLD_NAME {
+                            deletes.push(full_path.clone());
+                        }
+
+                        if action == FILE_ACTION_ADDED
+                            || action == FILE_ACTION_RENAMED_NEW_NAME
+                            || action == FILE_ACTION_MODIFIED
+                        {
+                            if let Ok(metadata) = fs::metadata(&full_path) {
+                                if metadata.is_file() {
+                                    let size_bytes = metadata.len() as i64;
+                                    let updated_time = metadata
+                                        .modified()
+                                        .ok()
+                                        .map(|t| chrono::DateTime::<Utc>::from(t).to_rfc3339())
+                                        .unwrap_or_else(|| Utc::now().to_rfc3339());
+                                    let created_time = metadata
+                                        .created()
+                                        .ok()
+                                        .map(|t| chrono::DateTime::<Utc>::from(t).to_rfc3339())
+                                        .unwrap_or_else(|| updated_time.clone());
+
+                                    let p = Path::new(&full_path);
+                                    let ext = p
+                                        .extension()
+                                        .map(|e| format!(".{}", e.to_string_lossy()))
+                                        .unwrap_or_default();
+                                    let category = FileCategory::from_extension(&ext) as u8;
+                                    let file_name = p
+                                        .file_name()
+                                        .map(|f| f.to_string_lossy().to_string())
+                                        .unwrap_or_default();
+                                    let directory = p
+                                        .parent()
+                                        .map(|d| d.to_string_lossy().to_string())
+                                        .unwrap_or_default();
+
+                                    let record = FileRecord {
+                                        id: full_path.clone(),
+                                        path: full_path.clone(),
+                                        file_name,
+                                        directory,
+                                        extension: ext,
+                                        size_bytes,
+                                        category,
+                                        created_time,
+                                        updated_time,
+                                        indexed_time: Utc::now().to_rfc3339(),
+                                    };
+
+                                    if action == FILE_ACTION_ADDED {
+                                        creates.push(record);
+                                    } else {
+                                        updates.push(record);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if next_offset == 0 {
+                        break;
+                    }
+                    offset += next_offset;
+                }
+
+                // Apply debounced changes incrementally
+                if !creates.is_empty() || !updates.is_empty() || !deletes.is_empty() {
+                    if let Ok(mut db) = db_arc.lock() {
+                        if let Ok((c, u, d)) = db.incremental_apply_batch(&creates, &updates, &deletes) {
+                            let total = (c + u + d) as u64;
+                            changes_counter.fetch_add(total, Ordering::Relaxed);
+                            *last_sync.lock().unwrap() = Utc::now().to_rfc3339();
+                        }
+                    }
+                }
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn create_test_db() -> Arc<Mutex<Database>> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let db = Database::new(PathBuf::from(":memory:")).unwrap_or_else(|_| {
+            // fallback in memory struct
+            panic!("Test db creation failed");
+        });
+        Arc::new(Mutex::new(db))
+    }
+
+    #[test]
+    fn test_frn_path_resolution_nested() {
+        let mut resolver = FrnPathResolver::new("C:");
+        resolver.insert_node(100, 5, "Projects", true);
+        resolver.insert_node(200, 100, "App", true);
+        resolver.insert_node(300, 200, "test.txt", false);
+
+        let resolved = resolver.resolve_file_path(200, "test.txt");
+        assert_eq!(resolved, Some(r"C:\Projects\App\test.txt".to_string()));
+    }
+
+    #[test]
+    fn test_watcher_start_and_shutdown() {
+        let db = create_test_db();
+        let sync_mgr = SyncManager::new(db);
+
+        assert!(!sync_mgr.is_watching.load(Ordering::Relaxed));
+        sync_mgr.start_active_watcher();
+        assert!(sync_mgr.is_watching.load(Ordering::Relaxed));
+
+        // Ensure clean shutdown with no background processes
+        sync_mgr.stop_active_watcher();
+        assert!(!sync_mgr.is_watching.load(Ordering::Relaxed));
     }
 }

@@ -68,6 +68,28 @@ export const HomePage: React.FC<HomePageProps> = ({
   } | null>(null);
   const [securityInspectFile, setSecurityInspectFile] = useState<FileRecord | null>(null);
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<string>('synced');
+
+  // Load and monitor sync status
+  useEffect(() => {
+    let mounted = true;
+    const checkSync = async () => {
+      try {
+        const res = await tauriBridge.getSyncStatus();
+        if (mounted && res) {
+          setSyncStatus(res.overallState);
+        }
+      } catch {
+        // ignore in non-tauri
+      }
+    };
+    checkSync();
+    const interval = setInterval(checkSync, 3000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   // Debounce search query input (200ms)
   useEffect(() => {
@@ -300,11 +322,24 @@ export const HomePage: React.FC<HomePageProps> = ({
           <button
             id="home-usn-sync-btn"
             onClick={() => setIsSyncModalOpen(true)}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 text-xs font-semibold border border-emerald-200 dark:border-emerald-800/40 transition-colors cursor-pointer"
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+              syncStatus === 'synchronizing'
+                ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800/40'
+                : 'bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/40'
+            }`}
             title="查看与管理 NTFS USN Journal 极速增量同步状态"
           >
-            <Zap className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 fill-emerald-500/20" />
-            <span>USN 极速增量同步</span>
+            {syncStatus === 'synchronizing' ? (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 animate-spin" />
+                <span>同步中 (Synchronizing...)</span>
+              </>
+            ) : (
+              <>
+                <Zap className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 fill-emerald-500/20" />
+                <span>已对齐 (Synced) • USN 增量</span>
+              </>
+            )}
           </button>
 
           <button
