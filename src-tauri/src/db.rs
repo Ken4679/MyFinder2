@@ -327,10 +327,6 @@ impl Database {
         }
     }
 
-    pub fn search_files(&self, filter: SearchFilter) -> Result<Vec<FileRecord>> {
-        self.search(&filter)
-    }
-
     pub fn search(&self, filter: &SearchFilter) -> Result<Vec<FileRecord>> {
         let query_trimmed = filter.query.trim();
         let limit = filter.limit.unwrap_or(200).min(500);
@@ -596,112 +592,6 @@ impl Database {
         Ok(list)
     }
 
-    pub fn incremental_upsert(&mut self, record: &FileRecord) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO files (id, path, file_name, directory, extension, size_bytes, category, created_time, updated_time, indexed_time)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-             ON CONFLICT(path) DO UPDATE SET
-                file_name = excluded.file_name,
-                directory = excluded.directory,
-                extension = excluded.extension,
-                size_bytes = excluded.size_bytes,
-                category = excluded.category,
-                created_time = excluded.created_time,
-                updated_time = excluded.updated_time,
-                indexed_time = excluded.indexed_time;",
-            params![
-                record.id,
-                record.path,
-                record.file_name,
-                record.directory,
-                record.extension,
-                record.size_bytes,
-                record.category,
-                record.created_time,
-                record.updated_time,
-                record.indexed_time,
-            ],
-        )?;
-        Ok(())
-    }
-
-    pub fn incremental_delete(&mut self, file_path: &str) -> Result<usize> {
-        let deleted = self.conn.execute(
-            "DELETE FROM files WHERE path = ?1 COLLATE NOCASE;",
-            params![file_path],
-        )?;
-        Ok(deleted)
-    }
-
-    pub fn incremental_rename(&mut self, old_path: &str, new_record: &FileRecord) -> Result<()> {
-        let tx = self.conn.transaction()?;
-        tx.execute(
-            "DELETE FROM files WHERE path = ?1 COLLATE NOCASE;",
-            params![old_path],
-        )?;
-        tx.execute(
-            "INSERT INTO files (id, path, file_name, directory, extension, size_bytes, category, created_time, updated_time, indexed_time)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-             ON CONFLICT(path) DO UPDATE SET
-                file_name = excluded.file_name,
-                directory = excluded.directory,
-                extension = excluded.extension,
-                size_bytes = excluded.size_bytes,
-                category = excluded.category,
-                created_time = excluded.created_time,
-                updated_time = excluded.updated_time,
-                indexed_time = excluded.indexed_time;",
-            params![
-                new_record.id,
-                new_record.path,
-                new_record.file_name,
-                new_record.directory,
-                new_record.extension,
-                new_record.size_bytes,
-                new_record.category,
-                new_record.created_time,
-                new_record.updated_time,
-                new_record.indexed_time,
-            ],
-        )?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    pub fn rename_path(&mut self, old_path: &str, new_record: &FileRecord) -> Result<()> {
-        let tx = self.conn.transaction()?;
-        // 1. Delete old path
-        tx.execute("DELETE FROM files WHERE path = ?1 COLLATE NOCASE;", params![old_path])?;
-        // 2. Insert new path
-        tx.execute(
-            "INSERT INTO files (id, path, file_name, directory, extension, size_bytes, category, created_time, updated_time, indexed_time)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-             ON CONFLICT(path) DO UPDATE SET
-                file_name = excluded.file_name,
-                directory = excluded.directory,
-                extension = excluded.extension,
-                size_bytes = excluded.size_bytes,
-                category = excluded.category,
-                created_time = excluded.created_time,
-                updated_time = excluded.updated_time,
-                indexed_time = excluded.indexed_time;",
-            params![
-                new_record.id,
-                new_record.path,
-                new_record.file_name,
-                new_record.directory,
-                new_record.extension,
-                new_record.size_bytes,
-                new_record.category,
-                new_record.created_time,
-                new_record.updated_time,
-                new_record.indexed_time,
-            ],
-        )?;
-        tx.commit()?;
-        Ok(())
-    }
-
     pub fn incremental_apply_batch(
         &mut self,
         creates: &[FileRecord],
@@ -842,7 +732,7 @@ mod tests {
 
         // 1. Chinese substring search: "财务预算"
         let res1 = db
-            .search_files(SearchFilter {
+            .search(&SearchFilter {
                 query: "财务预算".to_string(),
                 category: None,
                 start_date: None,
@@ -857,7 +747,7 @@ mod tests {
 
         // 2. English keyword search: "MyFinder"
         let res2 = db
-            .search_files(SearchFilter {
+            .search(&SearchFilter {
                 query: "MyFinder".to_string(),
                 category: None,
                 start_date: None,
@@ -872,7 +762,7 @@ mod tests {
 
         // 3. Category and extension search
         let res3 = db
-            .search_files(SearchFilter {
+            .search(&SearchFilter {
                 query: "规范".to_string(),
                 category: Some(2),
                 start_date: None,
@@ -887,7 +777,7 @@ mod tests {
 
         // 4. Single-word fragment tests: "预算", "设计", "架构"
         let res_budget = db
-            .search_files(SearchFilter {
+            .search(&SearchFilter {
                 query: "预算".to_string(),
                 category: None,
                 start_date: None,
@@ -901,7 +791,7 @@ mod tests {
         assert_eq!(res_budget[0].file_name, "2024年第一季度财务预算报告.xlsx");
 
         let res_design = db
-            .search_files(SearchFilter {
+            .search(&SearchFilter {
                 query: "设计".to_string(),
                 category: None,
                 start_date: None,
@@ -916,7 +806,7 @@ mod tests {
 
         // 5. Extension search
         let res_ext = db
-            .search_files(SearchFilter {
+            .search(&SearchFilter {
                 query: "pdf".to_string(),
                 category: None,
                 start_date: None,
@@ -928,6 +818,14 @@ mod tests {
             .unwrap();
         assert_eq!(res_ext.len(), 1);
         assert_eq!(res_ext[0].id, "2");
+
+        // 6. Test get_file_by_path
+        let found = db.get_file_by_path(r"D:\Documents\2024年第一季度财务预算报告.xlsx").unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().file_name, "2024年第一季度财务预算报告.xlsx");
+
+        let not_found = db.get_file_by_path(r"D:\NonExistent.txt").unwrap();
+        assert!(not_found.is_none());
     }
 
     #[test]
@@ -996,7 +894,7 @@ mod tests {
         db.incremental_apply_batch(&[old_rec], &[], &[]).unwrap();
         assert_eq!(db.get_stats().unwrap().total_files, 1);
 
-        // 2. Rename old.txt -> new.txt
+        // 2. Rename old.txt -> new.txt atomically
         let new_rec = FileRecord {
             id: r"C:\B\new.txt".to_string(),
             path: r"C:\B\new.txt".to_string(),
@@ -1010,7 +908,7 @@ mod tests {
             indexed_time: "2024-01-02T00:00:00Z".to_string(),
         };
 
-        db.rename_path(r"C:\A\old.txt", &new_rec).unwrap();
+        db.incremental_apply_batch(&[new_rec], &[], &[r"C:\A\old.txt".to_string()]).unwrap();
 
         // Verify C:\A\old.txt is completely gone and only C:\B\new.txt remains
         let old_exists: i64 = db

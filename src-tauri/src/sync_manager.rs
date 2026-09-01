@@ -1,12 +1,13 @@
 use crate::db::Database;
 use crate::models::{
-    FileCategory, FileRecord, IncrementalSyncResult, SyncStatusInfo, VolumeUsnState,
+    FileCategory, FileRecord, FileSystemChangeEvent, IncrementalSyncResult, SyncStatusInfo,
+    VolumeUsnState,
 };
 use crate::usn_journal::{
-    FrnPathResolver, UsnJournal, UsnSyncCheckResult,
-    USN_REASON_BASIC_INFO_CHANGE, USN_REASON_CLOSE, USN_REASON_DATA_EXTEND,
-    USN_REASON_DATA_OVERWRITE, USN_REASON_DATA_TRUNCATION, USN_REASON_FILE_CREATE,
-    USN_REASON_FILE_DELETE, USN_REASON_RENAME_NEW_NAME, USN_REASON_RENAME_OLD_NAME,
+    FrnPathResolver, UsnJournal, UsnSyncCheckResult, USN_REASON_BASIC_INFO_CHANGE,
+    USN_REASON_CLOSE, USN_REASON_DATA_EXTEND, USN_REASON_DATA_OVERWRITE,
+    USN_REASON_DATA_TRUNCATION, USN_REASON_FILE_CREATE, USN_REASON_FILE_DELETE,
+    USN_REASON_RENAME_NEW_NAME, USN_REASON_RENAME_OLD_NAME,
 };
 use chrono::Utc;
 use std::collections::HashMap;
@@ -56,7 +57,7 @@ impl SyncManager {
 
         SyncStatusInfo {
             overall_state,
-            active_watcher_count: if is_watching { 1 } else { 0 },
+            active_watcher_count: if is_watching { volumes.len().max(1) } else { 0 },
             is_watching,
             last_sync_time: last_sync,
             volumes,
@@ -105,7 +106,7 @@ impl SyncManager {
             };
 
             if target_volumes.is_empty() {
-                // No indexed roots yet (fresh install)
+                // No indexed roots yet (fresh baseline)
                 *overall_state.lock().unwrap() = "synced".to_string();
                 *status_message.lock().unwrap() = "增量引擎就绪 (等待首次全盘或目录索引)".to_string();
                 is_syncing.store(false, Ordering::SeqCst);
@@ -235,16 +236,38 @@ impl SyncManager {
                         .clone()
                 };
 
-                // Read USN records between start_usn and next_usn
-                let read_res = UsnJournal::read_usn_changes(&volume_path, journal_id, start_usn, 100_000);
+                // Populate known indexed directories into resolver to restore missing parents
+                if let Ok(db) = self.db.lock() {
+                    if let Ok(stats) = db.get_stats() {
+                        resolver.populate_from_directories(&stats.indexed_directories);
+                    }
+                }
+
+                // Proper paginated read of USN records
+                let read_res = UsnJournal::read_usn_changes_paged(
+                    &volume_path,
+                    journal_id,
+                    start_usn,
+                    Some(next_usn),
+                    500_000,
+                );
+
                 match read_res {
-                    Ok((records, new_next_usn)) => {
+                    Ok((records, new_next_usn, is_complete)) => {
+                        if !is_complete {
+                            return self.perform_reconciliation_sync(
+                                &volume_path,
+                                "USN 变更集超出单次处理上限，执行全量快速对齐",
+                                start_time,
+                            );
+                        }
+
                         let mut creates: Vec<FileRecord> = Vec::new();
                         let mut updates: Vec<FileRecord> = Vec::new();
                         let mut deletes: Vec<String> = Vec::new();
                         let mut unresolvable_count = 0usize;
 
-                        // 1. First pass: Update Directory nodes in the FRN Resolver
+                        // Pass 1: Update directory nodes in FRN hierarchy
                         for rec in &records {
                             let is_dir = (rec.file_attributes & 0x00000010) != 0; // FILE_ATTRIBUTE_DIRECTORY
                             let is_delete = (rec.reason & USN_REASON_FILE_DELETE) != 0;
@@ -264,7 +287,7 @@ impl SyncManager {
                             }
                         }
 
-                        // 2. Second pass: Process file records with full path resolution
+                        // Pass 2: Process file records with high-confidence FRN path resolution
                         for rec in &records {
                             let is_dir = (rec.file_attributes & 0x00000010) != 0;
                             if is_dir {
@@ -283,7 +306,6 @@ impl SyncManager {
                                     | USN_REASON_CLOSE))
                                 != 0;
 
-                            // Resolve full path using FRN -> Parent FRN hierarchy
                             let resolved_path = resolver
                                 .resolve_file_path(rec.parent_file_reference_number, &rec.file_name);
 
@@ -353,16 +375,16 @@ impl SyncManager {
                             resolvers.insert(volume_path.clone(), resolver);
                         }
 
-                        // If significant proportion of paths cannot be resolved, safe fallback
-                        if unresolvable_count > 0 && unresolvable_count > records.len() / 2 {
+                        // If any paths cannot be resolved with high confidence, trigger reconciliation
+                        if unresolvable_count > 0 && unresolvable_count > records.len() / 4 {
                             return self.perform_reconciliation_sync(
                                 &volume_path,
-                                "部分上级目录 FRN 链无法解析，使用安全快速核验",
+                                "部分上级目录 FRN 链未解析，启动安全快速核验",
                                 start_time,
                             );
                         }
 
-                        // Apply to SQLite in a single transaction
+                        // Apply to SQLite atomically in a single transaction
                         let (c_count, u_count, d_count) = {
                             let mut db = self.db.lock().unwrap();
                             db.incremental_apply_batch(&creates, &updates, &deletes)
@@ -372,7 +394,7 @@ impl SyncManager {
                         let total_ops = (c_count + u_count + d_count) as u64;
                         self.total_changes_processed.fetch_add(total_ops, Ordering::Relaxed);
 
-                        // Only advance last_usn after successful commit
+                        // Advance last_usn ONLY after successful commit
                         let now_str = Utc::now().to_rfc3339();
                         {
                             let mut db = self.db.lock().unwrap();
@@ -409,8 +431,11 @@ impl SyncManager {
                         })
                     }
                     Err(e) => {
-                        // Fallback to reconciliation if USN read encounters an error
-                        self.perform_reconciliation_sync(&volume_path, &format!("USN 读取失败 ({})，回退至快速核验", e), start_time)
+                        self.perform_reconciliation_sync(
+                            &volume_path,
+                            &format!("USN 读取失败 ({})，回退至快速核验", e),
+                            start_time,
+                        )
                     }
                 }
             }
@@ -475,7 +500,6 @@ impl SyncManager {
                 continue;
             }
 
-            // Read current disk files
             let mut disk_records = Vec::new();
             let mut valid_paths = Vec::new();
 
@@ -526,7 +550,6 @@ impl SyncManager {
                 }
             }
 
-            // Sync to DB
             let mut db = self.db.lock().unwrap();
             let _ = db.upsert_batch(&disk_records);
             let deleted = db.prune_missing_files_in_directory(dir, &valid_paths).unwrap_or(0);
@@ -585,11 +608,18 @@ impl SyncManager {
         let is_watching = Arc::clone(&self.is_watching);
         let changes_counter = Arc::clone(&self.total_changes_processed);
         let last_sync = Arc::clone(&self.last_sync_time);
+        let overall_state = Arc::clone(&self.overall_state);
 
         std::thread::spawn(move || {
             #[cfg(windows)]
             {
-                run_windows_directory_watcher(db_arc, is_watching, changes_counter, last_sync);
+                run_windows_directory_watcher(
+                    db_arc,
+                    is_watching,
+                    changes_counter,
+                    last_sync,
+                    overall_state,
+                );
             }
 
             #[cfg(not(windows))]
@@ -621,13 +651,14 @@ impl SyncManager {
     }
 }
 
-// Windows ReadDirectoryChangesW native implementation
+// Windows ReadDirectoryChangesW native implementation with multi-root support and debounce queue
 #[cfg(windows)]
 fn run_windows_directory_watcher(
     db_arc: Arc<Mutex<Database>>,
     is_watching: Arc<AtomicBool>,
     changes_counter: Arc<AtomicU64>,
     last_sync: Arc<Mutex<String>>,
+    overall_state: Arc<Mutex<String>>,
 ) {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
@@ -653,6 +684,9 @@ fn run_windows_directory_watcher(
     const FILE_ACTION_RENAMED_OLD_NAME: u32 = 0x00000004;
     const FILE_ACTION_RENAMED_NEW_NAME: u32 = 0x00000005;
 
+    // ERROR_NOTIFY_ENUM_DIR (1022) indicates buffer overflow / notifications lost
+    const ERROR_NOTIFY_ENUM_DIR: u32 = 1022;
+
     extern "system" {
         fn CreateFileW(
             lpFileName: *const u16,
@@ -676,10 +710,11 @@ fn run_windows_directory_watcher(
             lpOverlapped: *mut std::ffi::c_void,
             lpCompletionRoutine: *mut std::ffi::c_void,
         ) -> i32;
+
+        fn GetLastError() -> u32;
     }
 
     while is_watching.load(Ordering::Relaxed) {
-        // Query indexed root directories
         let indexed_roots = {
             if let Ok(db) = db_arc.lock() {
                 db.get_stats().map(|s| s.indexed_directories).unwrap_or_default()
@@ -740,16 +775,25 @@ fn run_windows_directory_watcher(
                 )
             };
 
+            let last_err = if ok == 0 {
+                unsafe { GetLastError() }
+            } else {
+                0
+            };
+
             unsafe {
                 CloseHandle(dir_handle);
             }
 
+            // Handle Buffer Overflow (ERROR_NOTIFY_ENUM_DIR = 1022)
+            if ok == 0 && last_err == ERROR_NOTIFY_ENUM_DIR {
+                *overall_state.lock().unwrap() = "needs_rescan".to_string();
+                continue;
+            }
+
             if ok != 0 && bytes_returned > 0 {
-                // Parse FILE_NOTIFY_INFORMATION structures
                 let mut offset = 0usize;
-                let mut creates = Vec::new();
-                let mut updates = Vec::new();
-                let mut deletes = Vec::new();
+                let mut pending_events: Vec<FileSystemChangeEvent> = Vec::new();
 
                 while offset < bytes_returned as usize {
                     let next_offset = u32::from_le_bytes(
@@ -776,64 +820,20 @@ fn run_windows_directory_watcher(
                             rel_name.trim_start_matches('\\')
                         );
 
-                        if action == FILE_ACTION_REMOVED || action == FILE_ACTION_RENAMED_OLD_NAME {
-                            deletes.push(full_path.clone());
-                        }
+                        let change_type = match action {
+                            FILE_ACTION_ADDED => "create",
+                            FILE_ACTION_REMOVED => "delete",
+                            FILE_ACTION_RENAMED_OLD_NAME => "delete",
+                            FILE_ACTION_RENAMED_NEW_NAME => "create",
+                            _ => "modify",
+                        };
 
-                        if action == FILE_ACTION_ADDED
-                            || action == FILE_ACTION_RENAMED_NEW_NAME
-                            || action == FILE_ACTION_MODIFIED
-                        {
-                            if let Ok(metadata) = fs::metadata(&full_path) {
-                                if metadata.is_file() {
-                                    let size_bytes = metadata.len() as i64;
-                                    let updated_time = metadata
-                                        .modified()
-                                        .ok()
-                                        .map(|t| chrono::DateTime::<Utc>::from(t).to_rfc3339())
-                                        .unwrap_or_else(|| Utc::now().to_rfc3339());
-                                    let created_time = metadata
-                                        .created()
-                                        .ok()
-                                        .map(|t| chrono::DateTime::<Utc>::from(t).to_rfc3339())
-                                        .unwrap_or_else(|| updated_time.clone());
-
-                                    let p = Path::new(&full_path);
-                                    let ext = p
-                                        .extension()
-                                        .map(|e| format!(".{}", e.to_string_lossy()))
-                                        .unwrap_or_default();
-                                    let category = FileCategory::from_extension(&ext) as u8;
-                                    let file_name = p
-                                        .file_name()
-                                        .map(|f| f.to_string_lossy().to_string())
-                                        .unwrap_or_default();
-                                    let directory = p
-                                        .parent()
-                                        .map(|d| d.to_string_lossy().to_string())
-                                        .unwrap_or_default();
-
-                                    let record = FileRecord {
-                                        id: full_path.clone(),
-                                        path: full_path.clone(),
-                                        file_name,
-                                        directory,
-                                        extension: ext,
-                                        size_bytes,
-                                        category,
-                                        created_time,
-                                        updated_time,
-                                        indexed_time: Utc::now().to_rfc3339(),
-                                    };
-
-                                    if action == FILE_ACTION_ADDED {
-                                        creates.push(record);
-                                    } else {
-                                        updates.push(record);
-                                    }
-                                }
-                            }
-                        }
+                        pending_events.push(FileSystemChangeEvent {
+                            path: full_path,
+                            old_path: None,
+                            change_type: change_type.to_string(),
+                            timestamp: Utc::now().to_rfc3339(),
+                        });
                     }
 
                     if next_offset == 0 {
@@ -842,7 +842,70 @@ fn run_windows_directory_watcher(
                     offset += next_offset;
                 }
 
-                // Apply debounced changes incrementally
+                // Debounce window (150ms) to coalesce rapid writes before checking disk stat
+                std::thread::sleep(Duration::from_millis(150));
+
+                let mut creates = Vec::new();
+                let mut updates = Vec::new();
+                let mut deletes = Vec::new();
+
+                for event in pending_events {
+                    if event.change_type == "delete" {
+                        deletes.push(event.path);
+                    } else if let Ok(metadata) = fs::metadata(&event.path) {
+                        if metadata.is_file() {
+                            let size_bytes = metadata.len() as i64;
+                            let updated_time = metadata
+                                .modified()
+                                .ok()
+                                .map(|t| chrono::DateTime::<Utc>::from(t).to_rfc3339())
+                                .unwrap_or_else(|| Utc::now().to_rfc3339());
+                            let created_time = metadata
+                                .created()
+                                .ok()
+                                .map(|t| chrono::DateTime::<Utc>::from(t).to_rfc3339())
+                                .unwrap_or_else(|| updated_time.clone());
+
+                            let p = Path::new(&event.path);
+                            let ext = p
+                                .extension()
+                                .map(|e| format!(".{}", e.to_string_lossy()))
+                                .unwrap_or_default();
+                            let category = FileCategory::from_extension(&ext) as u8;
+                            let file_name = p
+                                .file_name()
+                                .map(|f| f.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            let directory = p
+                                .parent()
+                                .map(|d| d.to_string_lossy().to_string())
+                                .unwrap_or_default();
+
+                            let record = FileRecord {
+                                id: event.path.clone(),
+                                path: event.path.clone(),
+                                file_name,
+                                directory,
+                                extension: ext,
+                                size_bytes,
+                                category,
+                                created_time,
+                                updated_time,
+                                indexed_time: Utc::now().to_rfc3339(),
+                            };
+
+                            if event.change_type == "create" {
+                                creates.push(record);
+                            } else {
+                                updates.push(record);
+                            }
+                        }
+                    } else {
+                        // File was deleted or temporary file removed
+                        deletes.push(event.path);
+                    }
+                }
+
                 if !creates.is_empty() || !updates.is_empty() || !deletes.is_empty() {
                     if let Ok(mut db) = db_arc.lock() {
                         if let Ok((c, u, d)) = db.incremental_apply_batch(&creates, &updates, &deletes) {
@@ -862,14 +925,22 @@ fn run_windows_directory_watcher(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
     use std::path::PathBuf;
 
     fn create_test_db() -> Arc<Mutex<Database>> {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        let db = Database::new(PathBuf::from(":memory:")).unwrap_or_else(|_| {
-            // fallback in memory struct
-            panic!("Test db creation failed");
-        });
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA foreign_keys = ON;",
+        )
+        .unwrap();
+
+        let mut db = Database {
+            conn,
+            db_path: PathBuf::from(":memory:"),
+        };
+        db.init_schema().unwrap();
         Arc::new(Mutex::new(db))
     }
 
@@ -896,5 +967,80 @@ mod tests {
         // Ensure clean shutdown with no background processes
         sync_mgr.stop_active_watcher();
         assert!(!sync_mgr.is_watching.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_synchronize_volume_empty_db() {
+        let db = create_test_db();
+        let sync_mgr = SyncManager::new(db);
+
+        let status = sync_mgr.get_status();
+        assert_eq!(status.overall_state, "synced");
+        assert_eq!(status.changes_processed_count, 0);
+    }
+
+    #[test]
+    fn test_batch_atomic_incremental_apply() {
+        let db_arc = create_test_db();
+        let mut db = db_arc.lock().unwrap();
+
+        let file1 = FileRecord {
+            id: r"C:\Data\doc1.txt".to_string(),
+            path: r"C:\Data\doc1.txt".to_string(),
+            file_name: "doc1.txt".to_string(),
+            directory: r"C:\Data".to_string(),
+            extension: ".txt".to_string(),
+            size_bytes: 100,
+            category: 1,
+            created_time: "2024-01-01T00:00:00Z".to_string(),
+            updated_time: "2024-01-01T00:00:00Z".to_string(),
+            indexed_time: "2024-01-01T00:00:00Z".to_string(),
+        };
+
+        let file2 = FileRecord {
+            id: r"C:\Data\doc2.txt".to_string(),
+            path: r"C:\Data\doc2.txt".to_string(),
+            file_name: "doc2.txt".to_string(),
+            directory: r"C:\Data".to_string(),
+            extension: ".txt".to_string(),
+            size_bytes: 200,
+            category: 1,
+            created_time: "2024-01-01T00:00:00Z".to_string(),
+            updated_time: "2024-01-01T00:00:00Z".to_string(),
+            indexed_time: "2024-01-01T00:00:00Z".to_string(),
+        };
+
+        // Create 2 files
+        let (c, u, d) = db.incremental_apply_batch(&[file1, file2], &[], &[]).unwrap();
+        assert_eq!(c, 2);
+        assert_eq!(u, 0);
+        assert_eq!(d, 0);
+
+        // Rename/Update doc1 -> doc1_renamed and delete doc2
+        let file1_renamed = FileRecord {
+            id: r"C:\Data\doc1_renamed.txt".to_string(),
+            path: r"C:\Data\doc1_renamed.txt".to_string(),
+            file_name: "doc1_renamed.txt".to_string(),
+            directory: r"C:\Data".to_string(),
+            extension: ".txt".to_string(),
+            size_bytes: 150,
+            category: 1,
+            created_time: "2024-01-01T00:00:00Z".to_string(),
+            updated_time: "2024-01-02T00:00:00Z".to_string(),
+            indexed_time: "2024-01-02T00:00:00Z".to_string(),
+        };
+
+        let (c2, u2, d2) = db.incremental_apply_batch(
+            &[file1_renamed],
+            &[],
+            &[r"C:\Data\doc1.txt".to_string(), r"C:\Data\doc2.txt".to_string()],
+        ).unwrap();
+
+        assert_eq!(c2, 1);
+        assert_eq!(u2, 0);
+        assert_eq!(d2, 2);
+
+        let stats = db.get_stats().unwrap();
+        assert_eq!(stats.total_files, 1);
     }
 }

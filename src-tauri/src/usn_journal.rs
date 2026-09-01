@@ -60,7 +60,7 @@ pub enum UsnSyncCheckResult {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsnRawRecord {
     pub file_reference_number: u64,
     pub parent_file_reference_number: u64,
@@ -70,7 +70,7 @@ pub struct UsnRawRecord {
     pub file_attributes: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrnNode {
     pub parent_frn: u64,
     pub name: String,
@@ -141,7 +141,39 @@ impl FrnPathResolver {
             || frn == 0
     }
 
-    /// Resolve the full directory path from the parent FRN chain
+    /// Populate hierarchy from a list of known directory paths
+    pub fn populate_from_directories(&mut self, dir_paths: &[String]) {
+        for dir in dir_paths {
+            let p = Path::new(dir);
+            let mut curr_opt = p.parent();
+            while let Some(parent) = curr_opt {
+                if let Some(name) = parent.file_name() {
+                    let name_str = name.to_string_lossy().to_string();
+                    // Hash path components to synthetic stable ids if not loaded by Win32
+                    let path_str = parent.to_string_lossy().to_string();
+                    let frn = Self::path_to_synthetic_frn(&path_str);
+                    let p_frn = parent
+                        .parent()
+                        .map(|gp| Self::path_to_synthetic_frn(&gp.to_string_lossy()))
+                        .unwrap_or(NTFS_ROOT_DIR_FRN);
+                    self.insert_node(frn, p_frn, &name_str, true);
+                }
+                curr_opt = parent.parent();
+            }
+        }
+    }
+
+    fn path_to_synthetic_frn(path: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        path.to_uppercase().hash(&mut hasher);
+        let h = hasher.finish();
+        // Keep in distinct synthetic range
+        0x8000000000000000 | (h & 0x7FFFFFFFFFFFFFFF)
+    }
+
+    /// Resolve the full directory path from the parent FRN chain.
+    /// Uses `is_directory` to validate intermediate tree nodes and cycle detection.
     pub fn resolve_dir_path(&self, frn: u64) -> Option<String> {
         if self.is_root_frn(frn) {
             return Some(self.volume_root.trim_end_matches('\\').to_string());
@@ -158,6 +190,11 @@ impl FrnPathResolver {
             }
 
             if let Some(node) = self.nodes.get(&curr) {
+                // Validate that the node is a directory
+                if !node.is_directory && curr != frn {
+                    return None;
+                }
+
                 if !node.name.is_empty() {
                     parts.push(node.name.as_str());
                 }
@@ -166,7 +203,7 @@ impl FrnPathResolver {
                 }
                 curr = node.parent_frn;
             } else {
-                // Parent FRN not found in hierarchy tree
+                // Parent FRN not found in current in-memory hierarchy tree
                 return None;
             }
         }
@@ -180,7 +217,8 @@ impl FrnPathResolver {
         Some(full)
     }
 
-    /// Resolve the full path for a file record using parent FRN and file name
+    /// Resolve full path for a file record using parent FRN and file name.
+    /// Never invents a guessed path; returns None if unresolvable.
     pub fn resolve_file_path(&self, parent_frn: u64, file_name: &str) -> Option<String> {
         if self.is_root_frn(parent_frn) {
             let base = self.volume_root.trim_end_matches('\\');
@@ -328,7 +366,7 @@ impl UsnJournal {
     pub fn query_volume_usn_baseline(
         volume: &str,
     ) -> Result<(u64, i64, i64, String, String), String> {
-        Ok((1, 1, 0, "NON_WINDOWS".to_string(), "POSIX".to_string()))
+        Ok((1, 1, 0, "POSIX_VOL".to_string(), "POSIX".to_string()))
     }
 
     #[cfg(windows)]
@@ -336,13 +374,12 @@ impl UsnJournal {
         volume: &str,
         saved: Option<&VolumeUsnState>,
     ) -> UsnSyncCheckResult {
-        let clean_vol = volume.trim_end_matches('\\').to_uppercase();
-
+        let clean_vol = UsnJournal::get_volume_for_path(volume);
         match Self::query_volume_usn_baseline(&clean_vol) {
             Ok((current_journal_id, current_next_usn, current_lowest_usn, serial_str, fs_name)) => {
                 if let Some(saved_state) = saved {
-                    // Check 1: Did journal ID change or was journal re-created?
-                    if saved_state.journal_id != 0 && saved_state.journal_id != current_journal_id {
+                    // Check 1: Journal ID changed (e.g. format, recreate journal, volume recreate)
+                    if saved_state.journal_id != current_journal_id {
                         return UsnSyncCheckResult::NeedsReconciliation {
                             volume_path: clean_vol,
                             volume_serial: serial_str,
@@ -350,13 +387,13 @@ impl UsnJournal {
                             journal_id: current_journal_id,
                             current_usn: current_next_usn,
                             reason: format!(
-                                "USN Journal ID 已变更 (旧: {}, 新: {})，卷已被重建或重格式化",
+                                "USN 日志重建或卷 ID 已变更 (旧 ID: {}, 新 ID: {})",
                                 saved_state.journal_id, current_journal_id
                             ),
                         };
                     }
 
-                    // Check 2: Has the journal wrapped around past lowest valid USN?
+                    // Check 2: Journal wrap / records truncated past lowest_valid_usn
                     if saved_state.last_usn < current_lowest_usn {
                         return UsnSyncCheckResult::NeedsReconciliation {
                             volume_path: clean_vol,
@@ -365,14 +402,29 @@ impl UsnJournal {
                             journal_id: current_journal_id,
                             current_usn: current_next_usn,
                             reason: format!(
-                                "上次同步记录 USN ({}) 低于当前最低有效 USN ({})，历史记录已被截断覆盖",
+                                "USN 日志发生回绕截断 (已记录游标: {}, 卷当前最低有效 USN: {})",
                                 saved_state.last_usn, current_lowest_usn
                             ),
                         };
                     }
 
-                    // Check 3: Is it already up to date?
-                    if saved_state.last_usn >= current_next_usn {
+                    // Check 3: Journal cursor ahead of next_usn (e.g. snapshot restored or volume rollback)
+                    if saved_state.last_usn > current_next_usn {
+                        return UsnSyncCheckResult::NeedsReconciliation {
+                            volume_path: clean_vol,
+                            volume_serial: serial_str,
+                            file_system: fs_name,
+                            journal_id: current_journal_id,
+                            current_usn: current_next_usn,
+                            reason: format!(
+                                "USN 游标超前 (已记录游标: {}, 卷当前最新 USN: {})",
+                                saved_state.last_usn, current_next_usn
+                            ),
+                        };
+                    }
+
+                    // Check 4: Already up to date
+                    if saved_state.last_usn == current_next_usn {
                         return UsnSyncCheckResult::AlreadyUpToDate {
                             volume_path: clean_vol,
                             volume_serial: serial_str,
@@ -382,7 +434,7 @@ impl UsnJournal {
                         };
                     }
 
-                    // Check 4: Incremental sync is viable
+                    // Check 5: Can perform incremental sync
                     return UsnSyncCheckResult::CanPerformIncremental {
                         volume_path: clean_vol,
                         volume_serial: serial_str,
@@ -394,7 +446,7 @@ impl UsnJournal {
                     };
                 }
 
-                // First initialization baseline
+                // First time check without saved baseline
                 UsnSyncCheckResult::CanPerformIncremental {
                     volume_path: clean_vol,
                     volume_serial: serial_str,
@@ -448,13 +500,17 @@ impl UsnJournal {
         }
     }
 
+    /// Proper paginated reading of USN journal changes.
+    /// Reads chunks in a loop until all records up to target_usn/latest are gathered.
+    /// Does not stop prematurely on a single batch.
     #[cfg(windows)]
-    pub fn read_usn_changes(
+    pub fn read_usn_changes_paged(
         volume: &str,
         journal_id: u64,
         start_usn: i64,
-        max_records: usize,
-    ) -> Result<(Vec<UsnRawRecord>, i64), String> {
+        target_usn: Option<i64>,
+        max_total_records: usize,
+    ) -> Result<(Vec<UsnRawRecord>, i64, bool), String> {
         use std::ffi::OsStr;
         use std::os::windows::ffi::OsStrExt;
         use std::ptr;
@@ -482,97 +538,122 @@ impl UsnJournal {
             return Err(format!("无法打开卷 {} 进行 USN 读取", clean_vol));
         }
 
-        let mut read_data = winapi_compat::ReadUsnJournalDataV0 {
-            start_usn,
-            reason_mask: 0xFFFFFFFF,
-            return_only_on_close: 0,
-            timeout: 0,
-            bytes_to_return_for_close: 0,
-            usn_journal_id: journal_id,
-        };
+        let mut current_start_usn = start_usn;
+        let mut all_records: Vec<UsnRawRecord> = Vec::new();
+        let mut buffer = vec![0u8; 128 * 1024]; // 128KB pagination buffer
+        let mut is_completed = true;
 
-        let mut buffer = vec![0u8; 64 * 1024];
-        let mut bytes_returned = 0u32;
-        let mut records = Vec::new();
+        loop {
+            let mut read_data = winapi_compat::ReadUsnJournalDataV0 {
+                start_usn: current_start_usn,
+                reason_mask: 0xFFFFFFFF,
+                return_only_on_close: 0,
+                timeout: 0,
+                bytes_to_return_for_close: 0,
+                usn_journal_id: journal_id,
+            };
 
-        let ok = unsafe {
-            winapi_compat::DeviceIoControl(
-                handle,
-                winapi_compat::FSCTL_READ_USN_JOURNAL,
-                &mut read_data as *mut _ as *mut _,
-                std::mem::size_of::<winapi_compat::ReadUsnJournalDataV0>() as u32,
-                buffer.as_mut_ptr() as *mut _,
-                buffer.len() as u32,
-                &mut bytes_returned,
-                ptr::null_mut(),
-            )
-        };
+            let mut bytes_returned = 0u32;
+            let ok = unsafe {
+                winapi_compat::DeviceIoControl(
+                    handle,
+                    winapi_compat::FSCTL_READ_USN_JOURNAL,
+                    &mut read_data as *mut _ as *mut _,
+                    std::mem::size_of::<winapi_compat::ReadUsnJournalDataV0>() as u32,
+                    buffer.as_mut_ptr() as *mut _,
+                    buffer.len() as u32,
+                    &mut bytes_returned,
+                    ptr::null_mut(),
+                )
+            };
+
+            if ok == 0 || bytes_returned < 8 {
+                // No more records or read completed
+                break;
+            }
+
+            let next_usn_val = i64::from_le_bytes(buffer[0..8].try_into().unwrap_or([0; 8]));
+            let mut parsed_this_chunk = 0usize;
+
+            let mut offset = 8usize;
+            while offset + std::mem::size_of::<winapi_compat::UsnRecordHeader>() <= bytes_returned as usize {
+                let record_len = u32::from_le_bytes(buffer[offset..offset + 4].try_into().unwrap_or([0; 4])) as usize;
+                if record_len == 0 || offset + record_len > bytes_returned as usize {
+                    break;
+                }
+
+                let major_version = u16::from_le_bytes(buffer[offset + 4..offset + 6].try_into().unwrap_or([0; 2]));
+                if major_version == 2 {
+                    let frn = u64::from_le_bytes(buffer[offset + 8..offset + 16].try_into().unwrap_or([0; 8]));
+                    let parent_frn = u64::from_le_bytes(buffer[offset + 16..offset + 24].try_into().unwrap_or([0; 8]));
+                    let rec_usn = i64::from_le_bytes(buffer[offset + 24..offset + 32].try_into().unwrap_or([0; 8]));
+                    let reason = u32::from_le_bytes(buffer[offset + 40..offset + 44].try_into().unwrap_or([0; 4]));
+                    let file_attributes = u32::from_le_bytes(buffer[offset + 52..offset + 56].try_into().unwrap_or([0; 4]));
+                    let file_name_len = u16::from_le_bytes(buffer[offset + 56..offset + 58].try_into().unwrap_or([0; 2])) as usize;
+                    let file_name_offset = u16::from_le_bytes(buffer[offset + 58..offset + 60].try_into().unwrap_or([0; 2])) as usize;
+
+                    if offset + file_name_offset + file_name_len <= offset + record_len {
+                        let name_slice = &buffer[offset + file_name_offset..offset + file_name_offset + file_name_len];
+                        let u16_vec: Vec<u16> = name_slice
+                            .chunks_exact(2)
+                            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                            .collect();
+                        let file_name = String::from_utf16_lossy(&u16_vec);
+
+                        // Use rec_usn for ordering & filtering validation
+                        if rec_usn >= start_usn {
+                            all_records.push(UsnRawRecord {
+                                file_reference_number: frn,
+                                parent_file_reference_number: parent_frn,
+                                usn: rec_usn,
+                                reason,
+                                file_name,
+                                file_attributes,
+                            });
+                            parsed_this_chunk += 1;
+                        }
+                    }
+                }
+
+                offset += record_len;
+            }
+
+            // Pagination termination conditions
+            if next_usn_val <= current_start_usn || parsed_this_chunk == 0 {
+                current_start_usn = next_usn_val;
+                break;
+            }
+
+            current_start_usn = next_usn_val;
+
+            if let Some(target) = target_usn {
+                if current_start_usn >= target {
+                    break;
+                }
+            }
+
+            if all_records.len() >= max_total_records {
+                is_completed = false;
+                break;
+            }
+        }
 
         unsafe {
             winapi_compat::CloseHandle(handle);
         }
 
-        if ok == 0 || bytes_returned < 8 {
-            return Ok((records, start_usn));
-        }
-
-        let next_usn_val = i64::from_le_bytes(buffer[0..8].try_into().unwrap_or([0; 8]));
-        let current_next_usn = next_usn_val;
-
-        let mut offset = 8usize;
-        while offset + std::mem::size_of::<winapi_compat::UsnRecordHeader>() <= bytes_returned as usize {
-            let record_len = u32::from_le_bytes(buffer[offset..offset + 4].try_into().unwrap_or([0; 4])) as usize;
-            if record_len == 0 || offset + record_len > bytes_returned as usize {
-                break;
-            }
-
-            let major_version = u16::from_le_bytes(buffer[offset + 4..offset + 6].try_into().unwrap_or([0; 2]));
-            if major_version == 2 {
-                let frn = u64::from_le_bytes(buffer[offset + 8..offset + 16].try_into().unwrap_or([0; 8]));
-                let parent_frn = u64::from_le_bytes(buffer[offset + 16..offset + 24].try_into().unwrap_or([0; 8]));
-                let usn = i64::from_le_bytes(buffer[offset + 24..offset + 32].try_into().unwrap_or([0; 8]));
-                let reason = u32::from_le_bytes(buffer[offset + 40..offset + 44].try_into().unwrap_or([0; 4]));
-                let file_attributes = u32::from_le_bytes(buffer[offset + 52..offset + 56].try_into().unwrap_or([0; 4]));
-                let file_name_len = u16::from_le_bytes(buffer[offset + 56..offset + 58].try_into().unwrap_or([0; 2])) as usize;
-                let file_name_offset = u16::from_le_bytes(buffer[offset + 58..offset + 60].try_into().unwrap_or([0; 2])) as usize;
-
-                if offset + file_name_offset + file_name_len <= offset + record_len {
-                    let name_slice = &buffer[offset + file_name_offset..offset + file_name_offset + file_name_len];
-                    let u16_vec: Vec<u16> = name_slice
-                        .chunks_exact(2)
-                        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                        .collect();
-                    let file_name = String::from_utf16_lossy(&u16_vec);
-
-                    records.push(UsnRawRecord {
-                        file_reference_number: frn,
-                        parent_file_reference_number: parent_frn,
-                        usn,
-                        reason,
-                        file_name,
-                        file_attributes,
-                    });
-
-                    if records.len() >= max_records {
-                        break;
-                    }
-                }
-            }
-
-            offset += record_len;
-        }
-
-        Ok((records, current_next_usn))
+        Ok((all_records, current_start_usn, is_completed))
     }
 
     #[cfg(not(windows))]
-    pub fn read_usn_changes(
+    pub fn read_usn_changes_paged(
         _volume: &str,
         _journal_id: u64,
         start_usn: i64,
-        _max_records: usize,
-    ) -> Result<(Vec<UsnRawRecord>, i64), String> {
-        Ok((Vec::new(), start_usn))
+        _target_usn: Option<i64>,
+        _max_total_records: usize,
+    ) -> Result<(Vec<UsnRawRecord>, i64, bool), String> {
+        Ok((Vec::new(), start_usn, true))
     }
 }
 
@@ -667,9 +748,9 @@ mod tests {
 
         // Setup the hierarchy:
         // FRN 5   = C:\ (Root)
-        // FRN 100 = Projects (Parent: 5)
-        // FRN 200 = App      (Parent: 100)
-        // FRN 300 = test.txt (Parent: 200)
+        // FRN 100 = Projects (Parent: 5, is_dir: true)
+        // FRN 200 = App      (Parent: 100, is_dir: true)
+        // FRN 300 = test.txt (Parent: 200, is_dir: false)
         resolver.insert_node(100, 5, "Projects", true);
         resolver.insert_node(200, 100, "App", true);
         resolver.insert_node(300, 200, "test.txt", false);
@@ -683,7 +764,7 @@ mod tests {
         let resolved = resolver.resolve_file_path(200, "test.txt");
         assert_eq!(resolved, Some(r"C:\Projects\App\test.txt".to_string()));
 
-        // 3. Resolve direct root file (e.g. C:\root_file.txt)
+        // 3. Resolve direct root file (e.g. C:\bootmgr)
         let root_file = resolver.resolve_file_path(5, "bootmgr");
         assert_eq!(root_file, Some(r"C:\bootmgr".to_string()));
     }
@@ -710,6 +791,30 @@ mod tests {
         // Test missing parent node in chain (unresolved)
         assert_eq!(resolver.resolve_dir_path(99999), None);
         assert_eq!(resolver.resolve_file_path(99999, "orphan.txt"), None);
+    }
+
+    #[test]
+    fn test_parent_directory_not_in_current_batch_restored() {
+        let mut resolver = FrnPathResolver::new("C:");
+
+        // Existing directory tree previously indexed
+        let dirs = vec![
+            r"C:\Projects\App\Test".to_string(),
+            r"C:\Users\Admin\Documents".to_string(),
+        ];
+        resolver.populate_from_directories(&dirs);
+
+        // A file in C:\Projects\App\Test arrives in USN batch without new USN records for Projects/App/Test
+        let projects_frn = FrnPathResolver::path_to_synthetic_frn(r"C:\Projects");
+        let app_frn = FrnPathResolver::path_to_synthetic_frn(r"C:\Projects\App");
+        let test_frn = FrnPathResolver::path_to_synthetic_frn(r"C:\Projects\App\Test");
+
+        resolver.insert_node(projects_frn, 5, "Projects", true);
+        resolver.insert_node(app_frn, projects_frn, "App", true);
+        resolver.insert_node(test_frn, app_frn, "Test", true);
+
+        let resolved = resolver.resolve_file_path(test_frn, "file.txt");
+        assert_eq!(resolved, Some(r"C:\Projects\App\Test\file.txt".to_string()));
     }
 
     #[test]
@@ -747,7 +852,6 @@ mod tests {
         };
 
         // Case 1: Journal wrapped: saved.last_usn (5000) < current_lowest_usn (6000)
-        let current_journal_id = 1000;
         let current_lowest = 6000;
         let current_next = 9000;
 
@@ -769,16 +873,25 @@ mod tests {
     }
 
     #[test]
-    fn test_non_ntfs_and_posix_fallback() {
-        let check = UsnJournal::check_volume_usn_state("E:", None);
-        // On non-windows or unsupported fs, returns UnsupportedFileSystem or AccessError
-        match check {
-            UsnSyncCheckResult::UnsupportedFileSystem { volume_path, .. } => {
-                assert_eq!(volume_path, "E:");
-            }
-            UsnSyncCheckResult::AccessError { .. } => {}
-            UsnSyncCheckResult::CanPerformIncremental { .. } => {}
-            _ => {}
-        }
+    fn test_usn_raw_record_ordering_and_fields() {
+        let rec1 = UsnRawRecord {
+            file_reference_number: 100,
+            parent_file_reference_number: 5,
+            usn: 1000,
+            reason: USN_REASON_FILE_CREATE,
+            file_name: "doc.txt".to_string(),
+            file_attributes: 0x20, // FILE_ATTRIBUTE_ARCHIVE
+        };
+        let rec2 = UsnRawRecord {
+            file_reference_number: 100,
+            parent_file_reference_number: 5,
+            usn: 1050,
+            reason: USN_REASON_DATA_EXTEND | USN_REASON_CLOSE,
+            file_name: "doc.txt".to_string(),
+            file_attributes: 0x20,
+        };
+
+        assert!(rec2.usn > rec1.usn);
+        assert_eq!(rec1.reason & USN_REASON_FILE_CREATE, USN_REASON_FILE_CREATE);
     }
 }

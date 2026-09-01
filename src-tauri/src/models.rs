@@ -195,50 +195,6 @@ pub struct UninstallPrecheckInfo {
     pub is_running: bool,
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UninstallLaunchResult {
-    pub success: bool,
-    pub process_id: Option<u32>,
-    pub message: String,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CleanupPlan {
-    pub software_id: String,
-    pub software_name: String,
-    pub items: Vec<LeftoverCandidate>,
-    pub is_dry_run: bool,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CleanupItemResult {
-    pub candidate_id: String,
-    pub path: String,
-    pub success: bool,
-    pub status: String, // "removed" | "skipped_in_use" | "skipped_protected" | "skipped_not_found" | "failed" | "dry_run_simulated"
-    pub message: String,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CleanupExecutionReport {
-    pub software_name: String,
-    pub total_candidates: usize,
-    pub removed_count: usize,
-    pub skipped_count: usize,
-    pub failed_count: usize,
-    pub results: Vec<CleanupItemResult>,
-    pub is_dry_run: bool,
-    pub timestamp: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuditLogEntry {
@@ -390,3 +346,43 @@ pub struct FileSystemChangeEvent {
     pub timestamp: String,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_file_category_conversions() {
+        assert_eq!(FileCategory::from_u8(1), FileCategory::Document);
+        assert_eq!(FileCategory::from_u8(2), FileCategory::Image);
+        assert_eq!(FileCategory::from_u8(3), FileCategory::Audio);
+        assert_eq!(FileCategory::from_u8(4), FileCategory::Video);
+        assert_eq!(FileCategory::from_u8(5), FileCategory::Executable);
+        assert_eq!(FileCategory::from_u8(6), FileCategory::Config);
+        assert_eq!(FileCategory::from_u8(7), FileCategory::Temp);
+        assert_eq!(FileCategory::from_u8(8), FileCategory::Archive);
+        assert_eq!(FileCategory::from_u8(99), FileCategory::Other);
+
+        assert_eq!(FileCategory::from_extension(".txt"), FileCategory::Document);
+        assert_eq!(FileCategory::from_extension("pdf"), FileCategory::Document);
+        assert_eq!(FileCategory::from_extension(".png"), FileCategory::Image);
+        assert_eq!(FileCategory::from_extension(".mp3"), FileCategory::Audio);
+        assert_eq!(FileCategory::from_extension(".mp4"), FileCategory::Video);
+        assert_eq!(FileCategory::from_extension(".exe"), FileCategory::Executable);
+        assert_eq!(FileCategory::from_extension(".zip"), FileCategory::Archive);
+        assert_eq!(FileCategory::from_extension(".json"), FileCategory::Config);
+        assert_eq!(FileCategory::from_extension(".tmp"), FileCategory::Temp);
+        assert_eq!(FileCategory::from_extension(".xyz"), FileCategory::Other);
+    }
+
+    #[test]
+    fn test_file_system_change_event_creation() {
+        let ev = FileSystemChangeEvent {
+            path: r"C:\Data\file.txt".to_string(),
+            old_path: Some(r"C:\Data\old_file.txt".to_string()),
+            change_type: "rename".to_string(),
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+        };
+        assert_eq!(ev.change_type, "rename");
+        assert_eq!(ev.old_path.as_deref(), Some(r"C:\Data\old_file.txt"));
+    }
+}
